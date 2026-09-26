@@ -88,6 +88,9 @@ enum Command {
         /// set-frame command then puts it back at its parked frame.
         #[arg(long)]
         force: bool,
+        /// Move without writing the window's size first.
+        #[arg(long)]
+        position_only: bool,
     },
     /// Write a frame to a window, in the top-left coordinates that `list ax`
     /// prints.
@@ -403,11 +406,13 @@ async fn main() -> anyhow::Result<()> {
             window_server_id,
             corner,
             force,
+            position_only,
         } => park(
             pid,
             window_server_id,
             corner,
             force,
+            position_only,
             MainThreadMarker::new().unwrap(),
         )?,
         Command::SetFrame {
@@ -420,7 +425,7 @@ async fn main() -> anyhow::Result<()> {
         } => {
             let window = find_window(pid, window_server_id)?;
             let frame = CGRect::new(CGPoint::new(x, y), CGSize::new(width, height));
-            write_frame(pid, &window, frame)?;
+            write_frame(pid, &window, frame, false)?;
         }
     }
     Ok(())
@@ -448,6 +453,7 @@ fn park(
     window_server_id: CGWindowID,
     corner: Option<Corner>,
     force: bool,
+    position_only: bool,
     mtm: MainThreadMarker,
 ) -> anyhow::Result<()> {
     let window = find_window(pid, window_server_id)?;
@@ -499,7 +505,7 @@ fn park(
     };
     let parked = CGRect { origin, size: frame.size };
     println!("Parking at {parked:?}");
-    write_frame(pid, &window, parked)
+    write_frame(pid, &window, parked, position_only)
 }
 
 /// Each corner with the origin of a window of `size` parked there and the area
@@ -556,10 +562,16 @@ fn best_screen_for_window(screens: &[CGRect], frame: &CGRect) -> Option<usize> {
         .or_else(|| screens.iter().position(|screen| screen.contains(frame.mid())))
 }
 
-/// Writes a frame the way the app actor handles `SetWindowFrame`: with enhanced
-/// UI off, size then position, reading the frame back after each attempt.
+/// Writes a frame with enhanced UI off, reading it back after each attempt.
+/// The position-only probe skips the size write; the normal path matches the
+/// app actor's size-then-position request.
 /// Returns an error if the window does not take the frame.
-fn write_frame(pid: pid_t, window: &AXUIElement, frame: CGRect) -> anyhow::Result<()> {
+fn write_frame(
+    pid: pid_t,
+    window: &AXUIElement,
+    frame: CGRect,
+    position_only: bool,
+) -> anyhow::Result<()> {
     const ATTEMPTS: usize = 3;
     let app = AXUIElement::application(pid);
     let enhanced = app.enhanced_user_interface().unwrap_or(false);
@@ -568,7 +580,9 @@ fn write_frame(pid: pid_t, window: &AXUIElement, frame: CGRect) -> anyhow::Resul
     }
     let result = (|| -> anyhow::Result<()> {
         for attempt in 1..=ATTEMPTS {
-            window.set_size(frame.size)?;
+            if !position_only {
+                window.set_size(frame.size)?;
+            }
             window.set_position(frame.origin)?;
             let observed = window.frame()?;
             println!("Attempt {attempt}: requested {frame:?}, observed {observed:?}");
@@ -1090,9 +1104,16 @@ mod tests {
     }
 
     #[test]
-    fn park_takes_a_corner_and_force() {
+    fn park_takes_a_corner_force_and_position_only() {
         let opt = Opt::try_parse_from([
-            "devtool", "park", "123", "456", "--corner", "top-left", "--force",
+            "devtool",
+            "park",
+            "123",
+            "456",
+            "--corner",
+            "top-left",
+            "--force",
+            "--position-only",
         ])
         .unwrap();
         let Command::Park {
@@ -1100,20 +1121,24 @@ mod tests {
             window_server_id,
             corner,
             force,
+            position_only,
         } = opt.command
         else {
             panic!("parsed the wrong command");
         };
         assert_eq!(
-            (123, 456, Some(Corner::TopLeft), true),
-            (pid, window_server_id, corner, force)
+            (123, 456, Some(Corner::TopLeft), true, true),
+            (pid, window_server_id, corner, force, position_only)
         );
 
         let opt = Opt::try_parse_from(["devtool", "park", "123", "456"]).unwrap();
-        let Command::Park { corner, force, .. } = opt.command else {
+        let Command::Park {
+            corner, force, position_only, ..
+        } = opt.command
+        else {
             panic!("parsed the wrong command");
         };
-        assert_eq!((None, false), (corner, force));
+        assert_eq!((None, false, false), (corner, force, position_only));
     }
 
     #[test]
