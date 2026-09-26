@@ -592,10 +592,20 @@ scope = "global"
 
 ## What we don't know yet
 
-These are facts about macOS that the code can't answer. The M1 physical spike must answer Q1 to Q4 on a real Mac. Q5 still needs its measured target. Each question below names the design that works with either answer, and the rule that changes if the spike contradicts it. Replace each question with the finding.
+These are facts about macOS that the code can't answer. Q1 has partial one-display evidence below. The M1 physical spike remains open for Q1 to Q4, and Q5 still needs a measured target.
 
 - **Q1.** Does macOS keep a window where Sugarglider puts it when only 1 pixel stays on screen? Check all four corners, with one display and with two. Check that the window stays parked when its app is activated, and whether apps move their own parked windows back.
-  - Not blocking. `parking_origin` is a pure function, so a different corner order changes only H1. If an app moves a parked window back, R39 parks it again, up to H2's cap of 5 since the last switch or Space change. If an app keeps moving it back past the cap, the fix goes into R39.
+  - Partial physical evidence, 2026-09-26: Tim tested TextEdit (PID 33920, window-server ID 47821) on one display with Sugarglider stopped. The visible screen frame was `(0, 33, 1512, 949)`, and the window started at `(305, 367, 586, 488)`. Every `devtool park` probe made three attempts. AX returned the same observed frame on all three, and the command reported an error. Tim manually restored the window to exactly `(305, 367, 586, 488)` after each probe.
+
+    | Probe | Requested frame | AX observed frame | Visible overlap |
+    | --- | --- | --- | --- |
+    | Bottom right | `(1511, 981, 586, 488)` | `(1511, 950, 586, 488)` | `1 × 32` points |
+    | Bottom left | `(-585, 981, 586, 488)` | `(-585, 950, 586, 488)` | `1 × 32` points |
+    | Top right | `(1511, -454, 586, 488)` | `(1511, 33, 586, 488)` | `1 × 488` points |
+    | Top left | `(-585, -454, 586, 488)` | `(-585, 33, 586, 488)` | `1 × 488` points |
+    | Horizontal edge | `(1512, 950, 586, 488)` | `(1472, 950, 586, 488)` | `40 × 32` points |
+
+    A position-only AX probe is next. Tim has not decided whether the `1 × 32` strip counts as parked. H1's acceptance rule remains open; this one-display TextEdit result does not answer Q1 for other apps, two displays, activation, or app-driven moves.
 - **Q2.** When Sugarglider parks the focused window, does macOS send an activation or main-window change, and does it arrive with `Quiet::No`? When no member can take focus, does activating Finder (R12, step 6) take key focus away from the parked window? Does Finder report a main-window change after that activation, for example to a parked Finder window?
   - Not blocking. R25's wait covers the switch's own raise and its parking echoes, so it ignores an activation that the switch caused whether or not macOS sends one. If such an activation can arrive after the wait ends, R25's end conditions change. Step 6 of R12 runs whether or not the parked window keeps key focus. If Finder reports a main-window change after its activation, R25's wait for step 6 changes.
 - **Q3.** When the user launches an app, does `ApplicationActivated` or `ApplicationMainWindowChanged` reach the reactor before the new window does (`ApplicationLaunched`, `WindowsDiscovered`, or `WindowCreated`)? Sugarglider keeps each app's events in order (R24), so this is only about the order of the Accessibility notifications.
