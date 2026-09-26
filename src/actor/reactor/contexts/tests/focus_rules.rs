@@ -510,10 +510,68 @@ fn r25_a_strict_repark_without_a_raise_holds_external_focus_until_readback() {
     let strict = s.apps.requests();
     assert_eq!(1, frame_writes(&strict, other).len());
     assert!(focused(&mut raises).iter().all(Option::is_none));
-    assert!(s.reactor.switch_guard.since.is_some());
+    assert!(s.reactor.next_guard_deadline().is_none());
+    assert!(s.reactor.next_parking_deadline().is_some());
 
     activate(&mut s, 2, other, Order::GloballyFirst);
     assert_eq!(c, s.reactor.contexts.active());
+
+    answer(&mut s, strict);
+    assert_eq!(d, s.reactor.contexts.active());
+}
+
+/// R25. A second switch can require a new parking echo while an older Finder
+/// wait remains. Expiring the Finder wait must keep that echo guarded.
+#[test]
+fn r25_an_older_finder_deadline_keeps_a_later_strict_repark_guarded() {
+    let (mut s, _c, d, other) = three_windows_under_everything();
+    let _raises = capture_raises(&mut s);
+    launch(&mut s, 9, finder_info(), vec![], &[wid(1), wid(2), other]);
+    let empty = s.create("Empty", &[]);
+    s.command(empty);
+    let initial = s.apps.requests();
+    answer(&mut s, initial);
+    s.apps.simulate_until_quiet(&mut s.reactor);
+    assert!(s.reactor.next_parking_deadline().is_none());
+    let first_since = s.reactor.switch_guard.since.unwrap();
+    let first_deadline = first_since + Duration::from_secs(2);
+
+    let moved = rect(300., 200., 50., 50.);
+    let previous = s.reactor.windows[&other].last_sent_txid;
+    s.apps.windows.get_mut(&other).unwrap().frame = moved;
+    s.reactor.handle_event(Event::WindowFrameChanged(
+        other,
+        moved,
+        previous,
+        Requested(false),
+        None,
+    ));
+    let routine = s.apps.requests();
+    assert_eq!(1, frame_writes(&routine, other).len());
+    let routine_txid = s.reactor.windows[&other].last_sent_txid;
+    s.apps.windows.get_mut(&other).unwrap().last_seen_txid = routine_txid;
+    s.reactor.handle_event(Event::WindowFrameChanged(
+        other,
+        moved,
+        routine_txid,
+        Requested(true),
+        None,
+    ));
+
+    s.command(empty);
+    let strict = s.apps.requests();
+    assert_eq!(1, frame_writes(&strict, other).len());
+    assert_eq!(Some(first_since), s.reactor.switch_guard.since);
+    let strict_deadline = s.reactor.next_parking_deadline().unwrap();
+    assert!(strict_deadline > first_deadline);
+
+    s.reactor.guard_deadline_tick(first_deadline);
+    assert!(s.reactor.next_guard_deadline().is_none());
+    assert_eq!(Some(strict_deadline), s.reactor.next_switch_deadline());
+    s.reactor.guard_deadline_tick(first_deadline + Duration::from_nanos(1));
+    assert_eq!(Some(strict_deadline), s.reactor.next_switch_deadline());
+    activate(&mut s, 2, other, Order::GloballyFirst);
+    assert_eq!(empty, s.reactor.contexts.active());
 
     answer(&mut s, strict);
     assert_eq!(d, s.reactor.contexts.active());
@@ -542,16 +600,20 @@ fn r25_the_2_second_fallback_also_ends_a_wait_for_echoes_or_for_finder() {
             answer(&mut s, requests);
             s.apps.simulate_until_quiet(&mut s.reactor);
         }
-        let since = s.reactor.switch_guard.since.unwrap();
-        s.reactor.guard_deadline_tick(since + Duration::from_secs(1));
+        let deadline = if waits_for == "echoes" {
+            s.reactor.next_parking_deadline().unwrap()
+        } else {
+            s.reactor.next_guard_deadline().unwrap()
+        };
+        s.reactor.guard_deadline_tick(deadline - Duration::from_secs(1));
         activate(&mut s, 2, other, Order::GloballyFirst);
         assert_eq!(target, s.reactor.contexts.active(), "{waits_for}");
 
         if waits_for == "echoes" {
-            let deadline = s.reactor.next_parking_deadline().unwrap();
             s.reactor.parking_deadline_tick(deadline);
+        } else {
+            s.reactor.guard_deadline_tick(deadline);
         }
-        s.reactor.guard_deadline_tick(since + Duration::from_secs(3));
         activate(&mut s, 2, other, Order::GloballyLast);
         assert_eq!(
             if waits_for == "echoes" {

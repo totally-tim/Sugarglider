@@ -41,7 +41,8 @@ pub(super) struct SwitchGuard {
     /// when the guard ends. The window the switch focused itself doesn't
     /// count.
     pending_focus: Option<WindowId>,
-    /// When the switch started to wait.
+    /// When the focus raise or Finder wait started. Parking echoes use their
+    /// own deadlines.
     pub(super) since: Option<Instant>,
 }
 
@@ -252,7 +253,7 @@ impl Reactor {
         if finder.is_some() {
             guard.finder = finder;
         }
-        if guard.since.is_none() && guard.holds() {
+        if guard.since.is_none() && (guard.raise.is_some() || guard.finder.is_some()) {
             guard.since = Some(Instant::now());
         }
         debug!(guard = ?self.switch_guard, "Waiting for the switch to end");
@@ -261,21 +262,20 @@ impl Reactor {
     pub(super) fn next_guard_deadline(&self) -> Option<Instant> {
         self.switch_guard
             .since
-            .filter(|_| self.switch_guard.holds())
+            .filter(|_| self.switch_guard.raise.is_some() || self.switch_guard.finder.is_some())
             .map(|since| since + GUARD_DEADLINE)
     }
 
-    /// Stops waiting for the end of a switch at its two-second deadline.
+    /// Ends the focus and Finder waits at their deadline. Parking echoes
+    /// remain guarded until their own readback or parking deadline.
     pub(super) fn guard_deadline_tick(&mut self, now: Instant) {
         if self.next_guard_deadline().is_some_and(|deadline| now >= deadline) {
             let guard = &self.switch_guard;
-            warn!(
-                ?guard,
-                "The switch didn't end in time; focus from outside counts again"
-            );
+            warn!(?guard, "The switch focus wait timed out");
+            let awaiting = self.pending_parking_writes();
             let guard = &mut self.switch_guard;
             guard.raise = None;
-            guard.echoes.clear();
+            guard.echoes.retain(|wid| awaiting.contains_key(wid));
             guard.finder = None;
             guard.since = None;
             self.finish_guard();
