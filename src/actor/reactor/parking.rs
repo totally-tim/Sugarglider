@@ -5,6 +5,7 @@
 //! only 1 point of it stays on screen.
 
 use std::io;
+use std::time::{Duration, Instant};
 
 use objc2_core_foundation::{CGRect, CGSize};
 use tracing::{debug, error, info, warn};
@@ -12,8 +13,9 @@ use tracing::{debug, error, info, warn};
 use super::animation::Animation;
 use super::{MAX_REPARKS, Reactor, TransactionId, fit_frame_to_screen};
 use crate::actor::app::{WindowId, pid_t};
+use crate::actor::contexts_snapshot::RequestId;
 use crate::actor::parked_journal::JournalEntry;
-use crate::collections::HashSet;
+use crate::collections::{HashMap, HashSet};
 use crate::model::parking_origin;
 use crate::sys::app::Process;
 use crate::sys::geometry::{CGRectExt, SameAs};
@@ -25,6 +27,7 @@ pub(super) type ProcessLookup = Box<dyn Fn(pid_t) -> Process + Send>;
 /// How far, in points, the position a window reports may be from the position
 /// written to put it back, for the window to count as back.
 const BACK_TOLERANCE: f64 = 16.0;
+const PARK_CONFIRM_DEADLINE: Duration = Duration::from_secs(2);
 
 /// Whether a window that reports `reported` is back at `target`. Only the
 /// position counts, because some apps keep a size of their own.
@@ -50,6 +53,13 @@ pub(super) struct Parked {
     /// that its app or the window server reported since. It never reaches the
     /// layout.
     pub(super) observed: CGRect,
+    /// The latest parking write still waiting for an AX frame readback.
+    awaiting: Option<(TransactionId, Instant)>,
+}
+
+pub(super) struct PendingParkingResult {
+    pub(super) request: RequestId,
+    pub(super) writes: HashMap<WindowId, TransactionId>,
 }
 
 /// A window whose journal entry is written, with the frame it has before it
@@ -218,6 +228,7 @@ impl Reactor {
                 Parked {
                     before: frame,
                     observed: corner,
+                    awaiting: None,
                 },
             );
             writes.push((wid, corner));
@@ -241,10 +252,12 @@ impl Reactor {
     /// frame, even if the reactor believes the window is there already.
     pub(super) fn release_parked(&mut self, wids: &[WindowId]) -> Vec<(WindowId, CGRect)> {
         let mut released = vec![];
+        let mut interrupted = false;
         for wid in wids {
-            let Some(Parked { before: frame, .. }) = self.parked.remove(wid) else {
+            let Some(Parked { before: frame, awaiting, .. }) = self.parked.remove(wid) else {
                 continue;
             };
+            interrupted |= awaiting.is_some();
             self.frame_attempts.remove(wid);
             self.forced_writes.insert(*wid);
             // The user can't be resizing a window in a corner, and
@@ -253,6 +266,12 @@ impl Reactor {
                 self.resizing_window = None;
             }
             released.push((*wid, frame));
+        }
+        if interrupted {
+            self.fail_parking_results_for(
+                wids,
+                "A context change interrupted parking before its frame was confirmed",
+            );
         }
         released
     }
@@ -335,6 +354,12 @@ impl Reactor {
     fn write_frames_now(&mut self, frames: &[(WindowId, CGRect)]) {
         let mut anim = Animation::new();
         for &(wid, frame) in frames {
+            if self.parked.get(&wid).is_some_and(|parked| parked.awaiting.is_some()) {
+                self.fail_parking_results_for(
+                    &[wid],
+                    "Another parking write replaced the frame before it was confirmed",
+                );
+            }
             let Some(window) = self.windows.get_mut(&wid) else {
                 continue;
             };
@@ -344,6 +369,9 @@ impl Reactor {
             let txid = window.next_txid();
             anim.add_window(&app.handle, wid, window.frame_monotonic, frame, false, txid);
             window.frame_monotonic = frame;
+            if let Some(parked) = self.parked.get_mut(&wid) {
+                parked.awaiting = Some((txid, Instant::now()));
+            }
         }
         self.send_animation(anim, true);
     }
@@ -362,6 +390,113 @@ impl Reactor {
         if self.windows.get(&wid).is_some_and(|window| window.last_sent_txid == last_seen) {
             parked.observed = frame;
         }
+    }
+
+    pub(super) fn pending_parking_writes(&self) -> HashMap<WindowId, TransactionId> {
+        self.parked
+            .iter()
+            .filter_map(|(&wid, parked)| parked.awaiting.map(|(txid, _)| (wid, txid)))
+            .collect()
+    }
+
+    pub(super) fn new_parking_writes(
+        &self,
+        before: &HashMap<WindowId, TransactionId>,
+    ) -> HashMap<WindowId, TransactionId> {
+        self.pending_parking_writes()
+            .into_iter()
+            .filter(|(wid, txid)| before.get(wid) != Some(txid))
+            .collect()
+    }
+
+    /// Accepts a parking write only when AX reports the corner that was sent.
+    /// An ordinary requested echo may carry the frame an app actually allowed,
+    /// even after the app thread exhausted its retries.
+    pub(super) fn park_write_echoed(
+        &mut self,
+        wid: WindowId,
+        reported: CGRect,
+        txid: TransactionId,
+    ) -> bool {
+        let Some(parked) = self.parked.get_mut(&wid) else {
+            return true;
+        };
+        if parked.awaiting.map(|(awaited, _)| awaited) != Some(txid) {
+            return true;
+        }
+        parked.observed = reported;
+        let target = self.windows[&wid].frame_monotonic;
+        if !reported.same_as(target) {
+            let reason = format!(
+                "Could not park window {wid:?}: AX reported {reported:?} instead of {target:?}"
+            );
+            self.abort_failed_parking(reason);
+            return false;
+        }
+        parked.awaiting = None;
+        self.confirm_parking_result(wid, txid);
+        true
+    }
+
+    pub(super) fn finish_parking_results(&mut self, error: Option<String>) {
+        for pending in std::mem::take(&mut self.pending_parking_results) {
+            self.record_command_result(pending.request, error.clone());
+        }
+    }
+
+    fn confirm_parking_result(&mut self, wid: WindowId, txid: TransactionId) {
+        let mut completed = Vec::new();
+        for pending in &mut self.pending_parking_results {
+            if pending.writes.get(&wid) == Some(&txid) {
+                pending.writes.remove(&wid);
+            }
+            if pending.writes.is_empty() {
+                completed.push(pending.request);
+            }
+        }
+        self.pending_parking_results.retain(|pending| !pending.writes.is_empty());
+        for request in completed {
+            self.record_command_result(request, None);
+        }
+    }
+
+    fn fail_parking_results_for(&mut self, wids: &[WindowId], reason: &str) {
+        let mut failed = Vec::new();
+        self.pending_parking_results.retain(|pending| {
+            if wids.iter().any(|wid| pending.writes.contains_key(wid)) {
+                failed.push(pending.request);
+                false
+            } else {
+                true
+            }
+        });
+        for request in failed {
+            self.record_command_result(request, Some(reason.into()));
+        }
+    }
+
+    pub(super) fn parking_confirmation_timed_out(&self, now: Instant) -> bool {
+        self.parked.values().any(|parked| {
+            parked.awaiting.is_some_and(|(_, since)| {
+                now.saturating_duration_since(since) >= PARK_CONFIRM_DEADLINE
+            })
+        })
+    }
+
+    pub(super) fn abort_failed_parking(&mut self, reason: String) {
+        error!("{reason}; showing Everything and restoring parked windows");
+        self.finish_parking_results(Some(reason));
+        self.switch_guard = Default::default();
+        _ = self.contexts.switch_to(crate::model::contexts::ContextKey::Everything);
+        self.contexts.set_screen_actives(
+            self.screens.iter().map(|screen| screen.id),
+            crate::model::contexts::ContextKey::Everything,
+        );
+        let parked: Vec<WindowId> = self.parked.keys().copied().collect();
+        let released = self.release_parked(&parked);
+        self.put_back_unplaced(&released);
+        self.apply_again();
+        self.save_contexts();
     }
 
     /// Handles the echo of a frame write. If the window is back from parking
@@ -389,6 +524,7 @@ impl Reactor {
 
     /// Forgets a destroyed window's parking state and journal entry.
     pub(super) fn forget_parked_window(&mut self, wid: WindowId, wsid: Option<WindowServerId>) {
+        self.fail_parking_results_for(&[wid], "The window closed before parking was confirmed");
         self.parked.remove(&wid);
         if let Some(wsid) = wsid {
             self.journal.remove_window(wid.pid, wsid);
@@ -397,6 +533,9 @@ impl Reactor {
 
     /// Forgets the parking state and journal entries of an app that is gone.
     pub(super) fn forget_parked_app(&mut self, pid: pid_t) {
+        let wids: Vec<WindowId> =
+            self.parked.keys().copied().filter(|wid| wid.pid == pid).collect();
+        self.fail_parking_results_for(&wids, "The app ended before parking was confirmed");
         self.parked.retain(|wid, _| wid.pid != pid);
         self.journal.remove_app(pid);
     }

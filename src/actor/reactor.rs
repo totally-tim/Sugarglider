@@ -535,6 +535,8 @@ pub struct Reactor {
     /// The results of the last context commands from the command line,
     /// oldest first, which the contexts snapshot carries.
     command_results: VecDeque<CommandResult>,
+    /// Commands whose parking writes still need AX readback before success.
+    pending_parking_results: Vec<parking::PendingParkingResult>,
     /// The snapshot of the contexts published last.
     published_contexts: Option<Arc<ContextsSnapshot>>,
     /// Physical display ids in screen order, supplied by SpaceManager.
@@ -796,6 +798,7 @@ impl Reactor {
             layout_file: None,
             exit: Box::new(|code| info!(code, "Not quitting a reactor that has no exit")),
             command_results: VecDeque::new(),
+            pending_parking_results: Vec::new(),
             published_contexts: None,
             display_ids: Vec::new(),
             show_switcher: Box::new(swift_bridge::show_context_switcher),
@@ -1133,14 +1136,18 @@ impl Reactor {
                     // frame is no longer on the Space it left.
                     self.moving_away.remove(&wid);
                 }
-                let window = self.windows.get_mut(&wid).unwrap();
-                if last_seen != window.last_sent_txid {
+                let sent_txid = self.windows.get(&wid).unwrap().last_sent_txid;
+                if last_seen != sent_txid {
                     // Ignore events that happened before the last time we
                     // changed the size or position of this window. Otherwise
                     // we would update the layout model incorrectly.
-                    debug!(?last_seen, ?window.last_sent_txid, "Ignoring resize");
+                    debug!(?last_seen, ?sent_txid, "Ignoring resize");
                     return;
                 }
+                if requested.0 && !self.park_write_echoed(wid, new_frame, last_seen) {
+                    return;
+                }
+                let window = self.windows.get_mut(&wid).unwrap();
                 // The window is at this size now, so its minimum cannot be
                 // larger. This also corrects a stale minimum after the app
                 // becomes willing to shrink again.
@@ -1714,11 +1721,35 @@ impl Reactor {
             }
             Event::ContextCommandRequested(request, cmd) => {
                 info!(?request, ?cmd);
+                let switches = matches!(
+                    cmd,
+                    ContextCommand::SwitchContext(_)
+                        | ContextCommand::ShowEverything
+                        | ContextCommand::PreviousContext
+                        | ContextCommand::CreateContext(_)
+                        | ContextCommand::CreateContextFromWindows { .. }
+                );
+                let before = self.pending_parking_writes();
                 let result = self.run_context_command(cmd);
                 if let Err(reason) = &result {
                     info!(?request, "The context command did nothing: {reason}");
                 }
-                self.record_command_result(request, result.err());
+                match result {
+                    Ok(()) => {
+                        let writes = if switches {
+                            self.pending_parking_writes()
+                        } else {
+                            self.new_parking_writes(&before)
+                        };
+                        if writes.is_empty() {
+                            self.record_command_result(request, None);
+                        } else {
+                            self.pending_parking_results
+                                .push(parking::PendingParkingResult { request, writes });
+                        }
+                    }
+                    Err(reason) => self.record_command_result(request, Some(reason)),
+                }
             }
             Event::Command(Command::Reactor(ReactorCommand::Debug)) => {
                 for screen in &self.screens {

@@ -473,9 +473,8 @@ fn r25_a_switch_that_raises_nothing_waits_for_the_echo_of_every_window_it_parked
     assert_eq!(d, s.reactor.contexts.active());
 }
 
-/// R25. When the echoes of a switch's parking writes never arrive, or
-/// Finder's activation never does, focus from outside counts again at the
-/// first visibility refresh 2 seconds after the switch, and not before.
+/// R25. A missing parking echo restores Everything at the deadline. A missing
+/// Finder activation only ends the focus wait.
 #[test]
 fn r25_the_2_second_fallback_also_ends_a_wait_for_echoes_or_for_finder() {
     for waits_for in ["echoes", "Finder"] {
@@ -498,13 +497,21 @@ fn r25_the_2_second_fallback_also_ends_a_wait_for_echoes_or_for_finder() {
             s.apps.simulate_until_quiet(&mut s.reactor);
         }
         let since = s.reactor.switch_guard.since.unwrap();
-        s.reactor.guard_deadline_tick(since + Duration::from_millis(1999));
+        s.reactor.guard_deadline_tick(since + Duration::from_secs(1));
         activate(&mut s, 2, other, Order::GloballyFirst);
         assert_eq!(target, s.reactor.contexts.active(), "{waits_for}");
 
-        s.reactor.guard_deadline_tick(since + Duration::from_secs(2));
+        s.reactor.guard_deadline_tick(since + Duration::from_secs(3));
         activate(&mut s, 2, other, Order::GloballyLast);
-        assert_eq!(d, s.reactor.contexts.active(), "{waits_for}");
+        assert_eq!(
+            if waits_for == "echoes" {
+                ContextKey::Everything
+            } else {
+                d
+            },
+            s.reactor.contexts.active(),
+            "{waits_for}"
+        );
     }
 }
 

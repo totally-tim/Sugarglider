@@ -189,6 +189,8 @@ fn r25_an_activation_before_the_switchs_raise_ends_does_not_switch() {
         // The activation that arrived during the wait applies now.
         assert_eq!(c, s.reactor.contexts.active(), "{end}");
         end_raises(&mut s);
+        // The return switch also waits for its parking write.
+        s.apps.simulate_until_quiet(&mut s.reactor);
         activate(&mut s, 2, other, Order::GloballyFirst);
         assert_eq!(d, s.reactor.contexts.active(), "{end}");
     }

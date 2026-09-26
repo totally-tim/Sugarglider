@@ -77,6 +77,7 @@ impl Reactor {
 #[cfg(test)]
 mod tests {
     use std::sync::{Arc, Mutex};
+    use std::time::{Duration, Instant, SystemTime};
 
     use objc2_core_foundation::CGPoint;
     use pretty_assertions::assert_eq;
@@ -84,14 +85,16 @@ mod tests {
 
     use super::super::create_context::tests::*;
     use super::super::testing::*;
-    use super::super::{Command, ContextCommand, ContextRef, Event, Reactor, ReactorCommand};
-    use crate::actor::app::{Quiet, WindowId};
+    use super::super::{
+        Command, ContextCommand, ContextRef, Event, Reactor, ReactorCommand, Requested,
+    };
+    use crate::actor::app::{Quiet, Request, WindowId};
     use crate::actor::contexts_snapshot::{
         CONTEXTS_OFF, CommandResult, ContextSummary, ContextsSnapshot, MAX_COMMAND_RESULTS,
         MemberSummary, RequestId, ScreenContext, app_name,
     };
     use crate::actor::layout::{LayoutCommand, LayoutEvent, LayoutManager};
-    use crate::actor::parked_journal::FailingWrites;
+    use crate::actor::parked_journal::{FailingWrites, ParkedJournal};
     use crate::actor::server::{ContextRequest, Response, answer_context_request};
     use crate::model::Direction;
     use crate::model::contexts::{ContextId, ContextKey, Scope, WindowDesc};
@@ -650,6 +653,173 @@ mod tests {
             request: RequestId(request),
             error: Some(reason.to_string()),
         }
+    }
+
+    fn start_park_command(
+        s: &mut Setup,
+        request: u64,
+    ) -> (objc2_core_foundation::CGRect, super::super::TransactionId) {
+        let empty = s.reactor.contexts.create("Empty").unwrap();
+        s.reactor.handle_event(Event::ContextCommandRequested(
+            RequestId(request),
+            ContextCommand::SwitchContext(ContextRef::Id(empty)),
+        ));
+        assert_eq!(Response::Pending, result_of(s, request));
+        s.apps
+            .requests()
+            .into_iter()
+            .find_map(|request| match request {
+                Request::SetWindowFrame(window, frame, txid) if window == wid(1) => {
+                    Some((frame, txid))
+                }
+                _ => None,
+            })
+            .expect("parking write")
+    }
+
+    /// A requested echo reports AX's observed frame even when the app refused
+    /// every retry. The command fails and the saved restore frame survives.
+    #[test]
+    fn a_refused_park_does_not_complete_the_switch_or_drop_the_journal() {
+        let mut s = Setup::new(1);
+        let before = s.apps.windows[&wid(1)].frame;
+        let (target, txid) = start_park_command(&mut s, 1);
+        assert_ne!(before, target);
+
+        s.reactor.handle_event(Event::WindowFrameChanged(
+            wid(1),
+            before,
+            txid,
+            Requested(true),
+            None,
+        ));
+
+        assert!(matches!(result_of(&s, 1), Response::Error(_)));
+        assert_eq!(ContextKey::Everything, s.reactor.contexts.active());
+        assert!(s.reactor.parked.is_empty());
+        let journal = ParkedJournal::open(s.dir.path().join("parked.json"), SystemTime::now());
+        assert_eq!(before, journal.entries()[0].frame.into());
+        assert_eq!(1, journal.entries().len(), "restore waits for its own echo");
+        let restores: Vec<_> = s
+            .apps
+            .requests()
+            .into_iter()
+            .filter_map(|request| match request {
+                Request::SetWindowFrame(window, frame, txid) if window == wid(1) => {
+                    Some((frame, txid))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            1,
+            restores.len(),
+            "abort sends one restore, without another park"
+        );
+        assert_eq!(before, restores[0].0);
+        s.reactor.handle_event(Event::WindowFrameChanged(
+            wid(1),
+            before,
+            restores[0].1,
+            Requested(true),
+            None,
+        ));
+        assert!(
+            ParkedJournal::open(s.dir.path().join("parked.json"), SystemTime::now())
+                .entries()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn textedit_clamped_park_is_rejected_and_keeps_the_original_frame() {
+        let visible = rect(0., 33., 1512., 949.);
+        let before = rect(305., 367., 586., 488.);
+        let mut s = Setup::on(vec![visible], vec![Some(space())]);
+        let mut window = make_window(1);
+        window.frame = before;
+        s.reactor.handle_events(s.apps.make_app(1, vec![window]));
+        s.reactor.handle_event(Event::StartupComplete);
+        s.apps.simulate_until_quiet(&mut s.reactor);
+        s.reactor.windows.get_mut(&wid(1)).unwrap().frame_monotonic = before;
+        s.apps.windows.get_mut(&wid(1)).unwrap().frame = before;
+        let (target, txid) = start_park_command(&mut s, 2);
+        assert_eq!(rect(1511., 981., 586., 488.), target);
+
+        s.reactor.handle_event(Event::WindowFrameChanged(
+            wid(1),
+            rect(1511., 950., 586., 488.),
+            txid,
+            Requested(true),
+            None,
+        ));
+
+        assert!(matches!(result_of(&s, 2), Response::Error(_)));
+        assert_eq!(ContextKey::Everything, s.reactor.contexts.active());
+        let journal = ParkedJournal::open(s.dir.path().join("parked.json"), SystemTime::now());
+        assert_eq!(before, journal.entries()[0].frame.into());
+        assert_eq!(1, journal.entries().len());
+    }
+
+    #[test]
+    fn unrelated_command_result_does_not_wait_for_an_older_park() {
+        let mut s = Setup::new(1);
+        let (target, txid) = start_park_command(&mut s, 3);
+        let empty = s.reactor.contexts.by_name("Empty").unwrap().id;
+        s.reactor.handle_event(Event::ContextCommandRequested(
+            RequestId(4),
+            ContextCommand::RenameContext {
+                context: ContextRef::Id(empty),
+                name: "Renamed".into(),
+            },
+        ));
+        assert_eq!(Response::Success, result_of(&s, 4));
+        assert_eq!(Response::Pending, result_of(&s, 3));
+        s.reactor.handle_event(Event::WindowFrameChanged(
+            wid(1),
+            target,
+            txid,
+            Requested(true),
+            None,
+        ));
+        assert_eq!(Response::Success, result_of(&s, 3));
+    }
+
+    #[test]
+    fn a_second_switch_waits_for_the_first_unconfirmed_park() {
+        let mut s = Setup::new(1);
+        let (target, txid) = start_park_command(&mut s, 7);
+        let empty = s.reactor.contexts.by_name("Empty").unwrap().id;
+        s.reactor.handle_event(Event::ContextCommandRequested(
+            RequestId(8),
+            ContextCommand::SwitchContext(ContextRef::Id(empty)),
+        ));
+        assert_eq!(Response::Pending, result_of(&s, 8));
+        assert_eq!(Response::Pending, result_of(&s, 7));
+        s.reactor.handle_event(Event::WindowFrameChanged(
+            wid(1),
+            target,
+            txid,
+            Requested(true),
+            None,
+        ));
+        assert_eq!(Response::Success, result_of(&s, 7));
+        assert_eq!(Response::Success, result_of(&s, 8));
+    }
+
+    #[test]
+    fn missing_park_echo_and_app_exit_finish_the_pending_result() {
+        let mut timed_out = Setup::new(1);
+        start_park_command(&mut timed_out, 5);
+        timed_out.reactor.guard_deadline_tick(Instant::now() + Duration::from_secs(3));
+        timed_out.reactor.publish_contexts_snapshot();
+        assert!(matches!(result_of(&timed_out, 5), Response::Error(_)));
+        assert_eq!(ContextKey::Everything, timed_out.reactor.contexts.active());
+
+        let mut ended = Setup::new(1);
+        start_park_command(&mut ended, 6);
+        ended.reactor.handle_event(Event::ApplicationThreadTerminated(1));
+        assert!(matches!(result_of(&ended, 6), Response::Error(_)));
     }
 
     /// A command from the command line publishes its result under its

@@ -31,8 +31,7 @@ pub(super) struct SwitchGuard {
     /// focusing raise: the failure or timeout of a batch before that raise
     /// doesn't end it.
     raise: Option<RaiseWait>,
-    /// When the switch raised nothing: the windows it parked whose echo of the
-    /// parking write hasn't arrived.
+    /// Windows the switch parked whose verified parking echo hasn't arrived.
     echoes: HashSet<WindowId>,
     /// Finder, when the switch activated it because no window could take focus,
     /// until its activation arrives or fails.
@@ -226,8 +225,8 @@ impl Reactor {
         self.guard_switch(sequence.zip(raised), parked, finder);
     }
 
-    /// Starts waiting for the end of a switch: its focusing raise, or, when it
-    /// raised nothing, the echo of every window it parked. With `finder`, the
+    /// Starts waiting for the end of a switch: its focusing raise and the
+    /// verified echo of every window it parked. With `finder`, the
     /// wait also lasts until Finder's activation arrives or fails. A wait that
     /// is already on stays on and is extended, so what the earlier switch
     /// still waited for still ends the wait.
@@ -238,6 +237,7 @@ impl Reactor {
         finder: Option<pid_t>,
     ) {
         let guard = &mut self.switch_guard;
+        guard.echoes.extend(parked);
         match raise {
             Some((sequence_id, focus)) => {
                 guard.raise = Some(RaiseWait {
@@ -246,7 +246,7 @@ impl Reactor {
                     sent: false,
                 });
             }
-            None => guard.echoes.extend(parked),
+            None => {}
         }
         if finder.is_some() {
             guard.finder = finder;
@@ -260,6 +260,10 @@ impl Reactor {
     /// Stops waiting for the end of a switch that started to wait 2 seconds or
     /// more before `now`. The reactor's visibility refresh calls this.
     pub(super) fn guard_deadline_tick(&mut self, now: Instant) {
+        if self.parking_confirmation_timed_out(now) {
+            self.abort_failed_parking("Parking was not confirmed before the deadline".into());
+            return;
+        }
         let guard = &self.switch_guard;
         if guard.holds()
             && guard
