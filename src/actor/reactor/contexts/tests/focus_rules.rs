@@ -473,6 +473,52 @@ fn r25_a_switch_that_raises_nothing_waits_for_the_echo_of_every_window_it_parked
     assert_eq!(d, s.reactor.contexts.active());
 }
 
+/// R25. A same-context switch must also wait for a strict repark of a window
+/// that its app moved after an earlier, routine repark was refused.
+#[test]
+fn r25_a_strict_repark_without_a_raise_holds_external_focus_until_readback() {
+    let (mut s, c, d, other) = three_windows_under_everything();
+    let mut raises = capture_raises(&mut s);
+    s.switch(c);
+    assert!(s.reactor.switch_guard.since.is_none());
+
+    let moved = rect(300., 200., 50., 50.);
+    let previous = s.reactor.windows[&other].last_sent_txid;
+    s.apps.windows.get_mut(&other).unwrap().frame = moved;
+    s.reactor.handle_event(Event::WindowFrameChanged(
+        other,
+        moved,
+        previous,
+        Requested(false),
+        None,
+    ));
+    let routine = s.apps.requests();
+    assert_eq!(1, frame_writes(&routine, other).len());
+    let routine_txid = s.reactor.windows[&other].last_sent_txid;
+    s.apps.windows.get_mut(&other).unwrap().last_seen_txid = routine_txid;
+    s.reactor.handle_event(Event::WindowFrameChanged(
+        other,
+        moved,
+        routine_txid,
+        Requested(true),
+        None,
+    ));
+    assert_eq!(c, s.reactor.contexts.active());
+    assert!(s.reactor.next_parking_deadline().is_none());
+
+    s.command(c);
+    let strict = s.apps.requests();
+    assert_eq!(1, frame_writes(&strict, other).len());
+    assert!(focused(&mut raises).iter().all(Option::is_none));
+    assert!(s.reactor.switch_guard.since.is_some());
+
+    activate(&mut s, 2, other, Order::GloballyFirst);
+    assert_eq!(c, s.reactor.contexts.active());
+
+    answer(&mut s, strict);
+    assert_eq!(d, s.reactor.contexts.active());
+}
+
 /// R25. A missing parking echo restores Everything at the deadline. A missing
 /// Finder activation only ends the focus wait.
 #[test]
@@ -516,6 +562,39 @@ fn r25_the_2_second_fallback_also_ends_a_wait_for_echoes_or_for_finder() {
             s.reactor.contexts.active(),
             "{waits_for}"
         );
+    }
+}
+
+/// R25. A visibility refresh just before the guard deadline cannot postpone
+/// a missing Finder activation or focusing raise until the following refresh.
+#[test]
+fn r25_missing_finder_or_raise_uses_the_exact_guard_deadline() {
+    for waits_for in ["Finder", "raise"] {
+        let (mut s, _c, d, other) = three_windows_under_everything();
+        let _raises = capture_raises(&mut s);
+        let target = if waits_for == "Finder" {
+            launch(&mut s, 9, finder_info(), vec![], &[wid(1), wid(2), other]);
+            s.create("Empty", &[])
+        } else {
+            d
+        };
+
+        s.command(target);
+        let requests = s.apps.requests();
+        answer(&mut s, requests);
+        s.apps.simulate_until_quiet(&mut s.reactor);
+        assert!(s.reactor.next_parking_deadline().is_none(), "{waits_for}");
+
+        let since = s.reactor.switch_guard.since.unwrap();
+        let deadline = since + Duration::from_secs(2);
+        let next_visibility_refresh = since + Duration::from_millis(1999);
+        assert!(next_visibility_refresh < deadline);
+        assert_eq!(Some(deadline), s.reactor.next_guard_deadline(), "{waits_for}");
+        assert_eq!(Some(deadline), s.reactor.next_switch_deadline(), "{waits_for}");
+        s.reactor.guard_deadline_tick(next_visibility_refresh);
+        assert_eq!(Some(deadline), s.reactor.next_switch_deadline(), "{waits_for}");
+        s.reactor.guard_deadline_tick(deadline);
+        assert!(s.reactor.next_switch_deadline().is_none(), "{waits_for}");
     }
 }
 

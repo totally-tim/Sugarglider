@@ -31,7 +31,8 @@ pub(super) struct SwitchGuard {
     /// focusing raise: the failure or timeout of a batch before that raise
     /// doesn't end it.
     raise: Option<RaiseWait>,
-    /// Windows the switch parked whose verified parking echo hasn't arrived.
+    /// Windows awaiting verified parking echoes for the switch, including
+    /// already-parked windows moved to a valid corner again.
     echoes: HashSet<WindowId>,
     /// Finder, when the switch activated it because no window could take focus,
     /// until its activation arrives or fails.
@@ -257,15 +258,17 @@ impl Reactor {
         debug!(guard = ?self.switch_guard, "Waiting for the switch to end");
     }
 
-    /// Stops waiting for the end of a switch that started to wait 2 seconds or
-    /// more before `now`. The reactor's visibility refresh calls this.
+    pub(super) fn next_guard_deadline(&self) -> Option<Instant> {
+        self.switch_guard
+            .since
+            .filter(|_| self.switch_guard.holds())
+            .map(|since| since + GUARD_DEADLINE)
+    }
+
+    /// Stops waiting for the end of a switch at its two-second deadline.
     pub(super) fn guard_deadline_tick(&mut self, now: Instant) {
-        let guard = &self.switch_guard;
-        if guard.holds()
-            && guard
-                .since
-                .is_some_and(|since| now.saturating_duration_since(since) >= GUARD_DEADLINE)
-        {
+        if self.next_guard_deadline().is_some_and(|deadline| now >= deadline) {
+            let guard = &self.switch_guard;
             warn!(
                 ?guard,
                 "The switch didn't end in time; focus from outside counts again"

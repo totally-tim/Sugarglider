@@ -509,8 +509,8 @@ impl Reactor {
             Ok((plan, response)) => {
                 self.hide_context_switcher();
                 self.save_contexts();
-                let parked: Vec<WindowId> =
-                    plan.park.iter().copied().filter(|wid| self.parked.contains_key(wid)).collect();
+                let mut parked: Vec<WindowId> = self.pending_parking_writes().into_keys().collect();
+                parked.sort();
                 let response = response.unwrap_or_default();
                 match focused {
                     Some(focused) => {

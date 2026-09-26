@@ -849,13 +849,14 @@ impl Reactor {
         let visibility_refresh_interval = Duration::from_secs(2);
         let mut visibility_timer = Timer::manual();
         visibility_timer.set_next_fire(visibility_refresh_interval);
-        let mut parking_timer = Timer::manual();
+        let mut switch_deadline_timer = Timer::manual();
 
         loop {
             let animating = self.layout.has_active_scroll_animation();
-            let parking_deadline = self.next_parking_deadline();
-            if let Some(deadline) = parking_deadline {
-                parking_timer.set_next_fire(deadline.saturating_duration_since(Instant::now()));
+            let switch_deadline = self.next_switch_deadline();
+            if let Some(deadline) = switch_deadline {
+                switch_deadline_timer
+                    .set_next_fire(deadline.saturating_duration_since(Instant::now()));
             }
             tokio::select! {
                 event = events.recv() => {
@@ -878,14 +879,19 @@ impl Reactor {
                     // Periodically refresh visible windows to detect closed windows.
                     self.update_visible_windows();
                     self.exit_deadline_tick(Instant::now());
-                    self.guard_deadline_tick(Instant::now());
                     visibility_timer.set_next_fire(visibility_refresh_interval);
                 }
-                _ = parking_timer.next(), if parking_deadline.is_some() => {
-                    self.parking_deadline_tick(Instant::now());
+                _ = switch_deadline_timer.next(), if switch_deadline.is_some() => {
+                    let now = Instant::now();
+                    self.parking_deadline_tick(now);
+                    self.guard_deadline_tick(now);
                 }
             }
         }
+    }
+
+    fn next_switch_deadline(&self) -> Option<Instant> {
+        self.next_parking_deadline().into_iter().chain(self.next_guard_deadline()).min()
     }
 
     fn log_event(&self, event: &Event) {
