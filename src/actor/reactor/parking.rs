@@ -53,7 +53,7 @@ pub(super) struct Parked {
     /// that its app or the window server reported since. It never reaches the
     /// layout.
     pub(super) observed: CGRect,
-    /// The latest parking write still waiting for an AX frame readback.
+    /// A context parking write waiting for AX frame readback.
     awaiting: Option<(TransactionId, Instant)>,
 }
 
@@ -154,7 +154,7 @@ impl Reactor {
     /// entry changes before the window moves. If that write fails, those
     /// windows stay where they are. While no screen shows a managed Space, as
     /// at the login window, nothing moves.
-    pub(super) fn repark_moved_windows(&mut self) {
+    pub(super) fn repark_moved_windows(&mut self, confirm_for_switch: bool) {
         if self.screens.iter().all(|screen| screen.space.is_none()) {
             return;
         }
@@ -214,7 +214,7 @@ impl Reactor {
         }
         if !writes.is_empty() {
             info!(count = writes.len(), "Parking windows again in valid corners");
-            self.write_frames_now(&writes);
+            self.write_frames_now(&writes, confirm_for_switch);
         }
     }
 
@@ -233,7 +233,7 @@ impl Reactor {
             );
             writes.push((wid, corner));
         }
-        self.write_frames_now(&writes);
+        self.write_frames_now(&writes, true);
         writes.into_iter().map(|(wid, _)| wid).collect()
     }
 
@@ -351,15 +351,10 @@ impl Reactor {
     ///
     /// Each write takes a new transaction id and becomes the window's known
     /// frame. It also resets the window's count of repeated writes.
-    fn write_frames_now(&mut self, frames: &[(WindowId, CGRect)]) {
+    fn write_frames_now(&mut self, frames: &[(WindowId, CGRect)], confirm_parking: bool) {
         let mut anim = Animation::new();
         for &(wid, frame) in frames {
-            if self.parked.get(&wid).is_some_and(|parked| parked.awaiting.is_some()) {
-                self.fail_parking_results_for(
-                    &[wid],
-                    "Another parking write replaced the frame before it was confirmed",
-                );
-            }
+            let awaiting = self.parked.get(&wid).and_then(|parked| parked.awaiting);
             let Some(window) = self.windows.get_mut(&wid) else {
                 continue;
             };
@@ -369,8 +364,18 @@ impl Reactor {
             let txid = window.next_txid();
             anim.add_window(&app.handle, wid, window.frame_monotonic, frame, false, txid);
             window.frame_monotonic = frame;
-            if let Some(parked) = self.parked.get_mut(&wid) {
-                parked.awaiting = Some((txid, Instant::now()));
+            if let Some((previous, _)) = awaiting {
+                for pending in &mut self.pending_parking_results {
+                    if pending.writes.get(&wid) == Some(&previous) {
+                        pending.writes.insert(wid, txid);
+                    }
+                }
+            }
+            if let Some(parked) = self.parked.get_mut(&wid)
+                && (confirm_parking || awaiting.is_some())
+            {
+                parked.awaiting =
+                    Some((txid, awaiting.map_or_else(Instant::now, |(_, since)| since)));
             }
         }
         self.send_animation(anim, true);
@@ -476,11 +481,20 @@ impl Reactor {
     }
 
     pub(super) fn parking_confirmation_timed_out(&self, now: Instant) -> bool {
-        self.parked.values().any(|parked| {
-            parked.awaiting.is_some_and(|(_, since)| {
-                now.saturating_duration_since(since) >= PARK_CONFIRM_DEADLINE
-            })
-        })
+        self.next_parking_deadline().is_some_and(|deadline| now >= deadline)
+    }
+
+    pub(super) fn next_parking_deadline(&self) -> Option<Instant> {
+        self.parked
+            .values()
+            .filter_map(|parked| parked.awaiting.map(|(_, since)| since + PARK_CONFIRM_DEADLINE))
+            .min()
+    }
+
+    pub(super) fn parking_deadline_tick(&mut self, now: Instant) {
+        if self.parking_confirmation_timed_out(now) {
+            self.abort_failed_parking("Parking was not confirmed before the deadline".into());
+        }
     }
 
     pub(super) fn abort_failed_parking(&mut self, reason: String) {
@@ -578,7 +592,7 @@ impl Reactor {
                 count = writes.len(),
                 "Putting back windows parked before a restart"
             );
-            self.write_frames_now(&writes);
+            self.write_frames_now(&writes, false);
         }
     }
 

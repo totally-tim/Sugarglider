@@ -399,7 +399,7 @@ impl Reactor {
         self.update_layout(&[], true);
         self.move_to_corners(parking);
         if self.contexts_enabled() && self.pending_exit.is_none() {
-            self.repark_moved_windows();
+            self.repark_moved_windows(matches!(apply, Apply::Switch { .. }));
         }
         Ok((plan, response))
     }

@@ -769,9 +769,9 @@ fn r39_r14_own_untracked_and_pinned_windows_that_become_visible_are_not_parked()
 /// The first move gets exactly one write, which parks the window again. No
 /// move gets more than that one write, or a write to another window, and
 /// once a write is answered nothing more happens, so Sugarglider never
-/// keeps a loop going on its own. Whether later moves are parked again is
-/// left open, because Q1 may put a limit into R39. The journal keeps the
-/// frame from before the first parking, and C's member keeps its tile.
+/// keeps a loop going on its own. The sixth and later moves get no write.
+/// The journal keeps the frame from before the first parking, and C's member
+/// keeps its tile.
 #[test]
 fn r39_an_app_that_keeps_moving_its_parked_window_back_gets_at_most_one_write_per_move() {
     let mut s = Setup::new(2);
@@ -787,13 +787,10 @@ fn r39_an_app_that_keeps_moving_its_parked_window_back_gets_at_most_one_write_pe
         move_by_app(&mut s, wid(2), moved);
         let requests = s.apps.requests();
         let writes = writes_in(&requests);
-        if round == 0 {
+        if round < 5 {
             assert_eq!(vec![(wid(2), parked_at)], writes);
         } else {
-            assert!(
-                writes.is_empty() || writes == vec![(wid(2), parked_at)],
-                "{writes:?}"
-            );
+            assert!(writes.is_empty(), "round {round}: {writes:?}");
         }
         answer(&mut s, requests);
         assert!(s.apps.requests().is_empty(), "round {round}");
@@ -805,49 +802,52 @@ fn r39_an_app_that_keeps_moving_its_parked_window_back_gets_at_most_one_write_pe
     assert_eq!(screen(), s.frame(wid(1)));
 }
 
-/// R39, Q1. A refused repark restores Everything and keeps the journal until
-/// the restore echo. It sends no second parking write.
+/// R39, Q1. A refused routine repark leaves the window where the app put it.
+/// The requested echo starts no write loop, and the journal still has the
+/// original frame for a later restore.
 #[test]
-fn r39_a_refused_repark_restores_everything_without_a_write_loop() {
+fn r39_a_refused_repark_keeps_the_context_and_starts_no_write_loop() {
     let mut s = Setup::new(2);
     let c = s.create("C", &[wid(1)]);
     s.switch(c);
     let parked_at = corner(CGSize::new(600., 1000.));
     let kept = rect(300., 200., 600., 700.);
 
-    move_by_app(&mut s, wid(2), kept);
-    let requests = s.apps.requests();
-    assert_eq!(vec![(wid(2), parked_at)], writes_in(&requests));
-    let txid = requests
-        .iter()
-        .find_map(|request| match request {
+    for round in 0..3 {
+        move_by_app(&mut s, wid(2), kept);
+        let requests = s.apps.requests();
+        let writes = writes_in(&requests);
+        if round == 0 {
+            assert_eq!(vec![(wid(2), parked_at)], writes);
+        } else {
+            assert!(
+                writes.is_empty() || writes == vec![(wid(2), parked_at)],
+                "{writes:?}"
+            );
+        }
+        let Some(txid) = requests.iter().find_map(|request| match request {
             Request::SetWindowFrame(wid, _, txid) if *wid == self::wid(2) => Some(*txid),
             _ => None,
-        })
-        .unwrap();
-    s.apps.windows.get_mut(&wid(2)).unwrap().last_seen_txid = txid;
-    s.reactor.handle_event(Event::WindowFrameChanged(
-        wid(2),
-        kept,
-        txid,
-        Requested(true),
-        None,
-    ));
+        }) else {
+            continue;
+        };
+        s.apps.windows.get_mut(&wid(2)).unwrap().last_seen_txid = txid;
+        s.reactor.handle_event(Event::WindowFrameChanged(
+            wid(2),
+            kept,
+            txid,
+            Requested(true),
+            None,
+        ));
+        assert!(s.apps.requests().is_empty(), "round {round}");
+    }
 
-    assert_eq!(ContextKey::Everything, s.reactor.contexts.active());
-    assert!(s.parked().is_empty());
+    s.reactor
+        .parking_deadline_tick(std::time::Instant::now() + std::time::Duration::from_secs(3));
+    assert_eq!(c, s.reactor.contexts.active());
+    assert_eq!(vec![wid(2)], s.parked());
     assert_eq!(vec![entry(2, rect(600., 0., 600., 1000.))], s.journal_on_disk());
-    let restores = s.apps.requests();
-    assert_eq!(
-        vec![
-            (wid(1), rect(0., 0., 600., 1000.)),
-            (wid(2), rect(600., 0., 600., 1000.)),
-        ],
-        writes_in(&restores),
-        "the abort sends layout and restore frames, without another park"
-    );
-    answer(&mut s, restores);
-    assert!(s.journal_on_disk().is_empty());
+    assert_eq!(vec![(wid(1), screen())], s.tiles());
 }
 
 /// R22. A title change reaches every record of the window: in C, in D, and

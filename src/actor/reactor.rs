@@ -849,9 +849,14 @@ impl Reactor {
         let visibility_refresh_interval = Duration::from_secs(2);
         let mut visibility_timer = Timer::manual();
         visibility_timer.set_next_fire(visibility_refresh_interval);
+        let mut parking_timer = Timer::manual();
 
         loop {
             let animating = self.layout.has_active_scroll_animation();
+            let parking_deadline = self.next_parking_deadline();
+            if let Some(deadline) = parking_deadline {
+                parking_timer.set_next_fire(deadline.saturating_duration_since(Instant::now()));
+            }
             tokio::select! {
                 event = events.recv() => {
                     let Some((span, event)) = event else { break };
@@ -875,6 +880,9 @@ impl Reactor {
                     self.exit_deadline_tick(Instant::now());
                     self.guard_deadline_tick(Instant::now());
                     visibility_timer.set_next_fire(visibility_refresh_interval);
+                }
+                _ = parking_timer.next(), if parking_deadline.is_some() => {
+                    self.parking_deadline_tick(Instant::now());
                 }
             }
         }
@@ -1125,7 +1133,7 @@ impl Reactor {
                     self.observe_parked(wid, new_frame, last_seen);
                     if self.contexts_enabled() && self.pending_exit.is_none() {
                         // The app may have moved the window out of its corner.
-                        self.repark_moved_windows();
+                        self.repark_moved_windows(false);
                     }
                     return;
                 }
@@ -1370,7 +1378,7 @@ impl Reactor {
                         self.layout.debug_tree_desc(space, "after event", false);
                     }
                 }
-                self.repark_moved_windows();
+                self.repark_moved_windows(false);
                 self.update_active_screen();
                 if self.startup_complete && self.reconcile_cold_scope() && self.contexts_in_use() {
                     self.apply_again_focusing_parked_main();

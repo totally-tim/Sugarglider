@@ -501,6 +501,10 @@ fn r25_the_2_second_fallback_also_ends_a_wait_for_echoes_or_for_finder() {
         activate(&mut s, 2, other, Order::GloballyFirst);
         assert_eq!(target, s.reactor.contexts.active(), "{waits_for}");
 
+        if waits_for == "echoes" {
+            let deadline = s.reactor.next_parking_deadline().unwrap();
+            s.reactor.parking_deadline_tick(deadline);
+        }
         s.reactor.guard_deadline_tick(since + Duration::from_secs(3));
         activate(&mut s, 2, other, Order::GloballyLast);
         assert_eq!(

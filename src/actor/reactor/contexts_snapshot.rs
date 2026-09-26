@@ -808,13 +808,61 @@ mod tests {
     }
 
     #[test]
+    fn a_display_change_retargets_an_unconfirmed_park_without_extending_its_deadline() {
+        let mut s = Setup::new(1);
+        let (old_target, old_txid) = start_park_command(&mut s, 9);
+        let deadline = s.reactor.next_parking_deadline().unwrap();
+        s.reactor.screens[0].frame = rect(0., 0., 1200., 800.);
+        s.reactor.repark_moved_windows(false);
+        let (target, txid) = s
+            .apps
+            .requests()
+            .into_iter()
+            .find_map(|request| match request {
+                Request::SetWindowFrame(window, frame, txid) if window == wid(1) => {
+                    Some((frame, txid))
+                }
+                _ => None,
+            })
+            .expect("replacement parking write");
+        assert_ne!(old_target, target);
+        assert_eq!(deadline, s.reactor.next_parking_deadline().unwrap());
+
+        s.reactor.handle_event(Event::WindowFrameChanged(
+            wid(1),
+            old_target,
+            old_txid,
+            Requested(true),
+            None,
+        ));
+        assert_eq!(Response::Pending, result_of(&s, 9));
+        s.reactor.handle_event(Event::WindowFrameChanged(
+            wid(1),
+            target,
+            txid,
+            Requested(true),
+            None,
+        ));
+        assert_eq!(Response::Success, result_of(&s, 9));
+        assert!(s.reactor.next_parking_deadline().is_none());
+    }
+
+    #[test]
     fn missing_park_echo_and_app_exit_finish_the_pending_result() {
         let mut timed_out = Setup::new(1);
+        let started = Instant::now();
         start_park_command(&mut timed_out, 5);
-        timed_out.reactor.guard_deadline_tick(Instant::now() + Duration::from_secs(3));
+        let deadline = timed_out.reactor.next_parking_deadline().unwrap();
+        assert!(deadline >= started + Duration::from_secs(2));
+        assert!(deadline <= Instant::now() + Duration::from_secs(2));
+        timed_out.reactor.parking_deadline_tick(deadline - Duration::from_nanos(1));
+        timed_out.reactor.publish_contexts_snapshot();
+        assert_eq!(Response::Pending, result_of(&timed_out, 5));
+        timed_out.reactor.parking_deadline_tick(deadline);
         timed_out.reactor.publish_contexts_snapshot();
         assert!(matches!(result_of(&timed_out, 5), Response::Error(_)));
         assert_eq!(ContextKey::Everything, timed_out.reactor.contexts.active());
+        assert!(timed_out.reactor.next_parking_deadline().is_none());
 
         let mut ended = Setup::new(1);
         start_park_command(&mut ended, 6);

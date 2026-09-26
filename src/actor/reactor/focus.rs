@@ -260,10 +260,6 @@ impl Reactor {
     /// Stops waiting for the end of a switch that started to wait 2 seconds or
     /// more before `now`. The reactor's visibility refresh calls this.
     pub(super) fn guard_deadline_tick(&mut self, now: Instant) {
-        if self.parking_confirmation_timed_out(now) {
-            self.abort_failed_parking("Parking was not confirmed before the deadline".into());
-            return;
-        }
         let guard = &self.switch_guard;
         if guard.holds()
             && guard
