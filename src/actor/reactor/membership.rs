@@ -6,7 +6,7 @@
 //! The design is in `docs/specs/contexts.md`.
 
 use redact::Secret;
-use tracing::{debug, error, info};
+use tracing::{debug, info};
 
 use super::contexts::Apply;
 use super::{ContextRef, Reactor, RecordRef};
@@ -372,7 +372,7 @@ impl Reactor {
         }
         info!(?tabs, ?id, "Moved the window to a context");
         self.save_contexts();
-        self.park_windows_that_left(&tabs);
+        self.park_windows_that_left(&tabs)?;
         Ok(())
     }
 
@@ -392,7 +392,7 @@ impl Reactor {
         }
         info!(?tabs, ?id, "Removed the window from the active context");
         self.save_contexts();
-        self.park_windows_that_left(&tabs);
+        self.park_windows_that_left(&tabs)?;
         Ok(())
     }
 
@@ -410,7 +410,7 @@ impl Reactor {
         info!(?tabs, pinned = !unpin, "Toggled pinning the window");
         self.save_contexts();
         if unpin {
-            self.park_windows_that_left(&tabs);
+            self.park_windows_that_left(&tabs)?;
         }
         Ok(())
     }
@@ -471,7 +471,7 @@ impl Reactor {
             "Edited a context"
         );
         self.save_contexts();
-        self.park_windows_that_left(&removed);
+        self.park_windows_that_left(&removed)?;
         Ok(())
     }
 
@@ -508,9 +508,9 @@ impl Reactor {
     /// Parks the windows that left the active context and no longer show, with
     /// their journal entries written first, takes them out of the layout, and
     /// focuses the active context's most recently focused member.
-    pub(super) fn park_windows_that_left(&mut self, wids: &[WindowId]) {
+    pub(super) fn park_windows_that_left(&mut self, wids: &[WindowId]) -> Result<(), String> {
         if !self.contexts_in_use() {
-            return;
+            return Ok(());
         }
         let spaces = self.shown_spaces(Apply::Again);
         let park: Vec<WindowId> = plan_switch(&self.switch_input(&spaces, None))
@@ -519,13 +519,14 @@ impl Reactor {
             .filter(|wid| wids.contains(wid))
             .collect();
         if park.is_empty() {
-            return;
+            return Ok(());
         }
         let parked = match self.journal_parking(&park) {
             Ok(parking) => self.move_to_corners(parking),
             Err(err) => {
-                error!("Could not write the parked-window journal, so nothing is parked: {err}");
-                return;
+                let reason = format!("Could not park a visible nonmember: {err}");
+                self.abort_failed_parking(reason.clone());
+                return Err(reason);
             }
         };
         let mut pids: Vec<pid_t> = parked.iter().map(|wid| wid.pid).collect();
@@ -536,6 +537,7 @@ impl Reactor {
         }
         let focus = plan_switch(&self.switch_input(&spaces, None)).focus;
         self.focus_after_parking(Default::default(), focus, false, &parked);
+        Ok(())
     }
 
     /// Parks the windows of `pid` that must not show, with their journal
@@ -563,7 +565,7 @@ impl Reactor {
                 info!(?parked, "Parking windows that must not show");
             }
             Err(err) => {
-                error!("Could not write the parked-window journal, so nothing is parked: {err}");
+                self.abort_failed_parking(format!("Could not park a visible nonmember: {err}"));
             }
         }
     }

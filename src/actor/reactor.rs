@@ -1140,7 +1140,7 @@ impl Reactor {
                     self.observe_parked(wid, new_frame, last_seen);
                     if self.contexts_enabled() && self.pending_exit.is_none() {
                         // The app may have moved the window out of its corner.
-                        self.repark_moved_windows(false);
+                        _ = self.repark_moved_windows();
                     }
                     return;
                 }
@@ -1385,7 +1385,7 @@ impl Reactor {
                         self.layout.debug_tree_desc(space, "after event", false);
                     }
                 }
-                self.repark_moved_windows(false);
+                _ = self.repark_moved_windows();
                 self.update_active_screen();
                 if self.startup_complete && self.reconcile_cold_scope() && self.contexts_in_use() {
                     self.apply_again_focusing_parked_main();

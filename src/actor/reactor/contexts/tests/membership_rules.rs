@@ -683,12 +683,11 @@ fn unminimize_window_3(s: &mut Setup) {
 }
 
 /// R39, R30, L4. Window 3, which isn't in C, is unminimized while the journal
-/// can't be written. It isn't parked, and it gets no tile. Once the journal
-/// can be written, the next window list parks it, with its entry written
-/// first.
+/// can't be written. The context ends so the nonmember is not left visible
+/// under a context. A later switch can park it after the journal recovers.
 #[test]
 fn r39_r30_a_window_that_becomes_visible_while_the_journal_fails_is_parked_later() {
-    let (mut s, _) = c_with_window_3_minimized();
+    let (mut s, c) = c_with_window_3_minimized();
     let frame = s.frame(wid(3));
     let in_c = halves(wid(1), wid(2));
     let failing = FailingWrites::start(s.dir.path());
@@ -702,11 +701,10 @@ fn r39_r30_a_window_that_becomes_visible_while_the_journal_fails_is_parked_later
 
     assert!(s.parked().is_empty());
     assert_eq!(frame, s.frame(wid(3)));
-    assert_eq!(in_c, s.tiles());
-    assert_eq!(in_c, s.frames(&[wid(1), wid(2)]));
+    assert_eq!(ContextKey::Everything, s.reactor.contexts.active());
     assert!(s.journal_on_disk().is_empty());
 
-    unminimize_window_3(&mut s);
+    s.command(c);
     let requests = s.apps.requests();
     assert_eq!(vec![corner(frame.size)], frame_writes(&requests, wid(3)));
     assert_eq!(vec![entry(3, frame)], s.journal_on_disk());
@@ -765,13 +763,8 @@ fn r39_r14_own_untracked_and_pinned_windows_that_become_visible_are_not_parked()
     assert_eq!(thirds, s.frames(&[wid(1), wid(2), wid(3)]));
 }
 
-/// R39, Q1. An app moves its parked window back onto the screen ten times.
-/// The first move gets exactly one write, which parks the window again. No
-/// move gets more than that one write, or a write to another window, and
-/// once a write is answered nothing more happens, so Sugarglider never
-/// keeps a loop going on its own. The sixth and later moves get no write.
-/// The journal keeps the frame from before the first parking, and C's member
-/// keeps its tile.
+/// R39, Q1. Five movements each get one repark. On the sixth, the context
+/// ends and the original frame remains available for restoration.
 #[test]
 fn r39_an_app_that_keeps_moving_its_parked_window_back_gets_at_most_one_write_per_move() {
     let mut s = Setup::new(2);
@@ -782,72 +775,56 @@ fn r39_an_app_that_keeps_moving_its_parked_window_back_gets_at_most_one_write_pe
     let journal = s.journal_on_disk();
     assert_eq!(vec![entry(2, rect(600., 0., 600., 1000.))], journal);
 
-    for round in 0..10 {
+    for round in 0..5 {
         let moved = rect(100. + 10. * f64::from(round), 200., 600., 700.);
         move_by_app(&mut s, wid(2), moved);
         let requests = s.apps.requests();
         let writes = writes_in(&requests);
-        if round < 5 {
-            assert_eq!(vec![(wid(2), parked_at)], writes);
-        } else {
-            assert!(writes.is_empty(), "round {round}: {writes:?}");
-        }
+        assert_eq!(vec![(wid(2), parked_at)], writes);
         answer(&mut s, requests);
         assert!(s.apps.requests().is_empty(), "round {round}");
     }
-
-    assert_eq!(vec![wid(2)], s.parked());
+    move_by_app(&mut s, wid(2), rect(200., 200., 600., 700.));
+    let restores = s.apps.requests();
+    assert!(!writes_in(&restores).contains(&(wid(2), parked_at)));
+    assert!(s.parked().is_empty());
+    assert_eq!(ContextKey::Everything, s.reactor.contexts.active());
     assert_eq!(journal, s.journal_on_disk());
-    assert_eq!(vec![(wid(1), screen())], s.tiles());
-    assert_eq!(screen(), s.frame(wid(1)));
+    answer(&mut s, restores);
 }
 
-/// R39, Q1. A refused routine repark leaves the window where the app put it.
-/// The requested echo starts no write loop, and the journal still has the
-/// original frame for a later restore.
+/// R39, Q1. A refused routine repark ends the context and restores windows.
+/// The requested echo starts no new parking write.
 #[test]
-fn r39_a_refused_repark_keeps_the_context_and_starts_no_write_loop() {
+fn r39_a_refused_repark_aborts_without_a_write_loop() {
     let mut s = Setup::new(2);
     let c = s.create("C", &[wid(1)]);
     s.switch(c);
     let parked_at = corner(CGSize::new(600., 1000.));
     let kept = rect(300., 200., 600., 700.);
 
-    for round in 0..3 {
-        move_by_app(&mut s, wid(2), kept);
-        let requests = s.apps.requests();
-        let writes = writes_in(&requests);
-        if round == 0 {
-            assert_eq!(vec![(wid(2), parked_at)], writes);
-        } else {
-            assert!(
-                writes.is_empty() || writes == vec![(wid(2), parked_at)],
-                "{writes:?}"
-            );
-        }
-        let Some(txid) = requests.iter().find_map(|request| match request {
+    move_by_app(&mut s, wid(2), kept);
+    let requests = s.apps.requests();
+    assert_eq!(vec![(wid(2), parked_at)], writes_in(&requests));
+    let txid = requests
+        .iter()
+        .find_map(|request| match request {
             Request::SetWindowFrame(wid, _, txid) if *wid == self::wid(2) => Some(*txid),
             _ => None,
-        }) else {
-            continue;
-        };
-        s.apps.windows.get_mut(&wid(2)).unwrap().last_seen_txid = txid;
-        s.reactor.handle_event(Event::WindowFrameChanged(
-            wid(2),
-            kept,
-            txid,
-            Requested(true),
-            None,
-        ));
-        assert!(s.apps.requests().is_empty(), "round {round}");
-    }
-
-    s.reactor
-        .parking_deadline_tick(std::time::Instant::now() + std::time::Duration::from_secs(3));
-    assert_eq!(c, s.reactor.contexts.active());
-    assert_eq!(vec![wid(2)], s.parked());
+        })
+        .unwrap();
+    s.apps.windows.get_mut(&wid(2)).unwrap().last_seen_txid = txid;
+    s.reactor.handle_event(Event::WindowFrameChanged(
+        wid(2),
+        kept,
+        txid,
+        Requested(true),
+        None,
+    ));
+    assert_eq!(ContextKey::Everything, s.reactor.contexts.active());
+    assert!(s.parked().is_empty());
     assert_eq!(vec![entry(2, rect(600., 0., 600., 1000.))], s.journal_on_disk());
-    assert_eq!(vec![(wid(1), screen())], s.tiles());
+    assert!(!writes_in(&s.apps.requests()).contains(&(wid(2), parked_at)));
 }
 
 /// R22. A title change reaches every record of the window: in C, in D, and

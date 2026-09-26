@@ -53,6 +53,11 @@ pub(super) enum Apply {
     Again,
 }
 
+enum ApplyError {
+    BeforeSwitch(io::Error),
+    ParkingAborted(String),
+}
+
 impl Reactor {
     pub(super) fn contexts_enabled(&self) -> bool {
         self.config.settings.experimental.contexts.enable
@@ -362,16 +367,19 @@ impl Reactor {
     /// app moved them, are parked again, except while quitting and with
     /// contexts off. Returns the plan and the layout's response to the
     /// exposure, which the caller handles.
-    fn apply(&mut self, apply: Apply) -> io::Result<(SwitchPlan, Option<EventResponse>)> {
+    fn apply(&mut self, apply: Apply) -> Result<(SwitchPlan, Option<EventResponse>), ApplyError> {
         let spaces = self.shown_spaces(apply);
         let only = Self::only_position(apply, &spaces);
         let plan = plan_switch(&self.switch_input(&spaces, only));
         let parking = match self.journal_parking(&plan.park) {
             Ok(parking) => parking,
-            Err(err) if matches!(apply, Apply::Switch { .. }) => return Err(err),
+            Err(err) if matches!(apply, Apply::Switch { .. }) => {
+                return Err(ApplyError::BeforeSwitch(err));
+            }
             Err(err) => {
-                error!("Could not write the parked-window journal, so nothing is parked: {err}");
-                vec![]
+                let reason = format!("Could not park a visible nonmember: {err}");
+                self.abort_failed_parking(reason.clone());
+                return Err(ApplyError::ParkingAborted(reason));
             }
         };
         if let Apply::Switch { target, screen } = apply {
@@ -399,7 +407,7 @@ impl Reactor {
         self.update_layout(&[], true);
         self.move_to_corners(parking);
         if self.contexts_enabled() && self.pending_exit.is_none() {
-            self.repark_moved_windows(matches!(apply, Apply::Switch { .. }));
+            self.repark_moved_windows().map_err(ApplyError::ParkingAborted)?;
         }
         Ok((plan, response))
     }
@@ -531,15 +539,14 @@ impl Reactor {
                 );
                 Ok(())
             }
-            Err(err) => {
+            Err(ApplyError::BeforeSwitch(err)) => {
                 self.added_since_switch = added;
                 self.contexts = contexts;
-                let reason = format!(
-                    "Could not write the parked-window journal, so the context stays: {err}"
-                );
+                let reason = format!("Could not prepare parking, so the context stays: {err}");
                 error!(?target, "{reason}");
                 Err(reason)
             }
+            Err(ApplyError::ParkingAborted(reason)) => Err(reason),
         }
     }
 
@@ -809,7 +816,7 @@ impl Reactor {
         );
         self.save_contexts();
         if !removed.is_empty() {
-            self.park_windows_that_left(&removed);
+            self.park_windows_that_left(&removed)?;
         }
         Ok(())
     }
@@ -1825,8 +1832,8 @@ mod tests {
         assert!(s.reactor.layout.context_ids().all(|id| ContextKey::Named(id) == c));
     }
 
-    /// R16. Window 3 comes back from being minimized while the journal
-    /// can't be written, so nothing parks it.
+    /// R16. A journal failure while window 3 returns ends the context.
+    /// A later switch parks both nonmembers after the journal recovers.
     #[test]
     fn r16_switching_to_the_active_context_parks_windows_that_drifted_in() {
         let mut s = Setup::new(3);
@@ -1838,8 +1845,8 @@ mod tests {
         let failing = FailingWrites::start(s.dir.path());
         report_visible(&mut s, &[wid(1), wid(2), wid(3)]);
         drop(failing);
-        assert_eq!(vec![wid(2)], s.parked());
-        assert_eq!(unminimized, s.frame(wid(3)));
+        assert_eq!(ContextKey::Everything, s.reactor.contexts.active());
+        assert!(s.parked().is_empty());
 
         s.switch(c);
 
@@ -4087,10 +4094,8 @@ mod tests {
         assert_eq!(corner(CGSize::new(400., 1000.)), s.frame(wid(1)));
     }
 
-    /// R30, R16. When the journal can't be written as a Space change applies
-    /// the context again, the Space shows the context and nothing is
-    /// parked. Switching to the context again then parks the window that
-    /// must not show.
+    /// R30, R16. A journal failure during a Space change ends the context.
+    /// Switching to it again after recovery can park its nonmembers.
     #[test]
     fn r30_a_failed_journal_write_in_a_space_change_parks_nothing() {
         let mut s = Setup::new(4);
@@ -4108,8 +4113,7 @@ mod tests {
         let c = s.create("C", &[wid(1), wid(3)]);
         s.switch(c);
         assert_eq!(vec![wid(2)], s.parked());
-        let journal = s.journal_on_disk();
-        assert_eq!(vec![entry(2, rect(600., 0., 600., 1000.))], journal);
+        assert_eq!(vec![entry(2, rect(600., 0., 600., 1000.))], s.journal_on_disk());
         let space2 = SpaceId::new(2);
 
         let failing = FailingWrites::start(s.dir.path());
@@ -4120,23 +4124,15 @@ mod tests {
         s.apps.simulate_until_quiet(&mut s.reactor);
         drop(failing);
 
-        assert_eq!(vec![(wid(3), screen())], s.tiles_on(space2, screen()));
-        assert_eq!(screen(), s.frame(wid(3)));
-        assert_eq!(frames[1].1, s.frame(wid(4)));
-        assert_eq!(vec![wid(2)], s.parked());
-        assert_eq!(journal, s.journal_on_disk());
+        assert_eq!(ContextKey::Everything, s.reactor.contexts.active());
+        assert!(s.parked().is_empty());
 
+        let recovered_frame = s.frame(wid(4));
         s.switch(c);
-        assert_eq!(vec![wid(2), wid(4)], s.parked());
-        assert_eq!(corner(CGSize::new(300., 1000.)), s.frame(wid(4)));
+        assert_eq!(vec![wid(4)], s.parked());
+        assert_eq!(corner(recovered_frame.size), s.frame(wid(4)));
         assert_eq!(vec![(wid(3), screen())], s.tiles_on(space2, screen()));
-        assert_eq!(
-            vec![
-                entry(2, rect(600., 0., 600., 1000.)),
-                entry(4, rect(900., 0., 300., 1000.)),
-            ],
-            s.journal_on_disk()
-        );
+        assert_eq!(vec![entry(4, recovered_frame)], s.journal_on_disk());
     }
 
     /// R13, R12. A switch to a context without windows parks every window
@@ -4856,6 +4852,7 @@ mod tests {
             .handle_events(s.apps.make_app(1, vec![at(1, 100.), at(2, 1300.), at(3, 1400.)]));
         s.reactor.handle_event(Event::StartupComplete);
         s.apps.simulate_until_quiet(&mut s.reactor);
+        report_visible(&mut s, &[wid(1)]);
         assert_eq!(vec![(wid(1), screen())], s.tiles());
         let c = s.create("C", &[wid(1), wid(2)]);
         s.switch(c);
@@ -4908,12 +4905,10 @@ mod tests {
         assert_eq!(in_c, s.tiles());
     }
 
-    /// H2, L4, L10. Under a context, a window that isn't a member and isn't
-    /// parked, here because the journal couldn't be written, gets no tile on
-    /// the display its app moves it to, and the mouse over it takes no
-    /// focus.
+    /// H2, L4. A display change cannot leave a context active with visible
+    /// nonmembers when their parking journal cannot be written.
     #[test]
-    fn h2_a_non_member_moved_to_another_display_gets_no_tile_there() {
+    fn h2_a_failed_journal_on_display_change_ends_the_context() {
         let mut s = two_displays_two_apps();
         let space2 = SpaceId::new(2);
         let c = s.create("C", &[wid(1), wid(2)]);
@@ -4930,31 +4925,7 @@ mod tests {
         s.apps.simulate_until_quiet(&mut s.reactor);
         drop(failing);
         assert!(s.parked().is_empty());
-        assert_eq!(vec![(wid(1), screen())], s.tiles_on(space(), screen()));
-        assert_eq!(vec![(wid(2), right())], s.tiles_on(space2, right()));
-        let (raise_manager_tx, mut raise_manager_rx) = mpsc::unbounded_channel();
-        s.reactor.raise_manager_tx = raise_manager_tx;
-
-        // App 2 moves its window 1 onto the right display.
-        let moved = WindowId::new(2, 1);
-        let frame = rect(1500., 100., 600., 1000.);
-        s.apps.windows.get_mut(&moved).unwrap().frame = frame;
-        let txid = s.reactor.windows[&moved].last_sent_txid;
-        s.reactor.handle_event(Event::WindowFrameChanged(
-            moved,
-            frame,
-            txid,
-            Requested(false),
-            None,
-        ));
-        s.reactor
-            .handle_event(Event::MouseMovedOverWindow(WindowServerId::new(21), None));
-        s.apps.simulate_until_quiet(&mut s.reactor);
-
-        assert_eq!(vec![(wid(1), screen())], s.tiles_on(space(), screen()));
-        assert_eq!(vec![(wid(2), right())], s.tiles_on(space2, right()));
-        assert_eq!(frame, s.frame(moved));
-        assert!(raise_manager_rx.try_recv().is_err());
+        assert_eq!(ContextKey::Everything, s.reactor.contexts.active());
     }
 
     /// L10. A window that the user moves to another display under a context

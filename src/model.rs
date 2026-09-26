@@ -18,6 +18,6 @@ mod window;
 
 pub use layout_mapping::SpaceLayoutMapping;
 pub use layout_tree::{LayoutId, LayoutKind, LayoutTree};
-pub use parking::parking_origin;
+pub use parking::{BottomCorner, accepted_bottom_strip, bounded_bottom_corner};
 pub use size::{ContainerKind, Direction, GroupBarInfo, Orientation};
 pub use tree::NodeId;

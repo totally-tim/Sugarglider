@@ -21,12 +21,12 @@ use objc2_app_kit::{
 };
 use objc2_core_foundation::{CFRetained, CGPoint, CGRect, CGSize};
 use objc2_core_graphics::{
-    CGDirectDisplayID, CGDisplayBounds, CGError, CGGetActiveDisplayList, CGMainDisplayID,
-    CGWindowID, CGWindowListCopyWindowInfo, CGWindowListOption, kCGNullWindowID,
+    CGDisplayBounds, CGMainDisplayID, CGWindowID, CGWindowListCopyWindowInfo, CGWindowListOption,
+    kCGNullWindowID,
 };
 use objc2_foundation::{MainThreadMarker, NSString};
 use sugarglider::actor::{self, reactor};
-use sugarglider::model::parking_origin;
+use sugarglider::model::{accepted_bottom_strip, bounded_bottom_corner};
 use sugarglider::sys::app::{AXUIElementExt, AppInfo, NSRunningApplicationExt, WindowInfo};
 use sugarglider::sys::event::{self, get_mouse_pos};
 use sugarglider::sys::executor::Executor;
@@ -74,14 +74,13 @@ enum Command {
         #[arg(long, default_value_t = 200)]
         interval_ms: u64,
     },
-    /// Park a window in a corner of its screen with 1 point left on screen.
-    /// Prints a set-frame command that puts it back, and the four corners with
-    /// how much a window parked there overlaps other displays.
+    /// Probe parking with the production bottom-strip rule. Explicit corner
+    /// choices are diagnostic probes and can use unsupported geometry.
     #[command()]
     Park {
         pid: pid_t,
         window_server_id: CGWindowID,
-        /// The corner to park in. Without it, the corner the parking rule picks.
+        /// An explicit diagnostic corner. Omit to use the production rule.
         #[arg(long, value_enum)]
         corner: Option<Corner>,
         /// Park the window even if it looks parked already. The printed
@@ -107,7 +106,7 @@ enum Command {
     },
 }
 
-/// A corner of a screen, in the order the parking rule tries them.
+/// A corner for an explicit diagnostic probe.
 #[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
 enum Corner {
     BottomRight,
@@ -461,11 +460,12 @@ fn park(
     let (screens, _) = ScreenCache::new()
         .update_screen_config(screen::get_ns_screens(mtm))
         .context("Could not read the screen configuration")?;
-    let screens: Vec<CGRect> = screens.iter().map(|screen| screen.visible_frame).collect();
-    let screen = best_screen_for_window(&screens, &frame).context("Window is on no screen")?;
-    let target = screens[screen];
+    let frames: Vec<CGRect> = screens.iter().map(|screen| screen.visible_frame).collect();
+    let screen = best_screen_for_window(&frames, &frame).context("Window is on no screen")?;
+    let target = frames[screen];
+    let bounds = screens[screen].bounds;
     if looks_parked(frame, target) {
-        println!("The window shows at most 1 point in a corner of screen {screen} {target:?}.");
+        println!("The window already shows a narrow corner strip on screen {screen} {target:?}.");
         if !force {
             println!("Pass --force to park it anyway.");
             bail!("window looks parked; restore it first");
@@ -480,20 +480,18 @@ fn park(
         frame.origin.x, frame.origin.y, frame.size.width, frame.size.height,
     );
 
-    let others: Vec<CGRect> = display_bounds()?
-        .into_iter()
-        .filter(|bounds| !bounds.contains(target.mid()))
+    let others: Vec<CGRect> = screens
+        .iter()
+        .enumerate()
+        .filter(|(idx, _)| *idx != screen)
+        .map(|(_, screen)| screen.bounds)
         .collect();
-    let automatic = parking_origin(frame.size, target, &others);
-    println!("Corners of screen {screen} {target:?}, with the area that overlaps other displays:");
+    let automatic = bounded_bottom_corner(frame.size, bounds, &others);
+    println!("Production target uses full display bounds {bounds:?}.");
+    println!("Explicit diagnostic corners use visible frame {target:?}:");
     for (candidate, origin, overlap) in corner_candidates(frame.size, target, &others) {
-        let choice = if origin == automatic {
-            " (automatic choice)"
-        } else {
-            ""
-        };
         println!(
-            "  {:<12} origin ({}, {}), overlap {overlap}{choice}",
+            "  {:<12} origin ({}, {}), overlap {overlap}",
             candidate.name(),
             origin.x,
             origin.y,
@@ -501,11 +499,19 @@ fn park(
     }
     let origin = match corner {
         Some(corner) => corner.origin(frame.size, target),
-        None => automatic,
+        None => automatic.context("No clear bottom corner under the production rule")?.0,
     };
     let parked = CGRect { origin, size: frame.size };
     println!("Parking at {parked:?}");
-    write_frame(pid, &window, parked, position_only)
+    match corner {
+        Some(_) => write_frame(pid, &window, parked, position_only),
+        None => {
+            let side = automatic.expect("the automatic target was checked").1;
+            write_frame_with_acceptance(pid, &window, parked, position_only, |observed| {
+                accepted_bottom_strip(observed, parked.size, bounds, &others, side)
+            })
+        }
+    }
 }
 
 /// Each corner with the origin of a window of `size` parked there and the area
@@ -526,28 +532,14 @@ fn corner_candidates(
         .collect()
 }
 
-/// Whether a window at `frame` shows at most a 1-point strip of `screen`, in
-/// one of its corners, the way a parked window does.
+/// Whether a window at `frame` has a narrow corner strip on the visible
+/// frame. This also recognizes explicit diagnostic top-corner probes.
 fn looks_parked(frame: CGRect, screen: CGRect) -> bool {
     let shown = screen.intersection(&frame);
     let thin = shown.size.width <= 1.0 || shown.size.height <= 1.0;
     let covers_corner = (frame.min().x <= screen.min().x || frame.max().x >= screen.max().x)
         && (frame.min().y <= screen.min().y || frame.max().y >= screen.max().y);
     thin && covers_corner
-}
-
-/// The full bounds of every active display, in the same top-left coordinates
-/// as window frames.
-fn display_bounds() -> anyhow::Result<Vec<CGRect>> {
-    const MAX_DISPLAYS: usize = 64;
-    let mut ids: [CGDirectDisplayID; MAX_DISPLAYS] = [0; MAX_DISPLAYS];
-    let mut count = 0;
-    // SAFETY: `ids` has room for `MAX_DISPLAYS` display ids.
-    let err = unsafe { CGGetActiveDisplayList(MAX_DISPLAYS as u32, ids.as_mut_ptr(), &mut count) };
-    if err != CGError::Success {
-        bail!("Could not list the displays: {err:?}");
-    }
-    Ok(ids[..count as usize].iter().map(|&id| CGDisplayBounds(id)).collect())
 }
 
 /// The screen the window overlaps the most, the way the reactor picks it.
@@ -572,6 +564,18 @@ fn write_frame(
     frame: CGRect,
     position_only: bool,
 ) -> anyhow::Result<()> {
+    write_frame_with_acceptance(pid, window, frame, position_only, |observed| {
+        observed.same_as(frame)
+    })
+}
+
+fn write_frame_with_acceptance(
+    pid: pid_t,
+    window: &AXUIElement,
+    frame: CGRect,
+    position_only: bool,
+    accepts: impl Fn(CGRect) -> bool,
+) -> anyhow::Result<()> {
     const ATTEMPTS: usize = 3;
     let app = AXUIElement::application(pid);
     let enhanced = app.enhanced_user_interface().unwrap_or(false);
@@ -586,7 +590,10 @@ fn write_frame(
             window.set_position(frame.origin)?;
             let observed = window.frame()?;
             println!("Attempt {attempt}: requested {frame:?}, observed {observed:?}");
-            if observed.same_as(frame) {
+            if accepts(observed) {
+                if !observed.same_as(frame) {
+                    println!("Accepted observed frame under the bounded bottom-strip rule");
+                }
                 return Ok(());
             }
             if attempt < ATTEMPTS {
@@ -1065,7 +1072,7 @@ async fn time<O, F: Future<Output = O>>(desc: &str, f: impl FnOnce() -> F) -> O 
 mod tests {
     use clap::Parser;
     use objc2_core_foundation::{CGPoint, CGRect, CGSize};
-    use sugarglider::model::parking_origin;
+    use sugarglider::model::{BottomCorner, bounded_bottom_corner};
 
     use super::{Command, Corner, Opt, corner_candidates, looks_parked};
 
@@ -1158,30 +1165,28 @@ mod tests {
     }
 
     #[test]
-    fn park_candidates_agree_with_the_parking_rule() {
+    fn automatic_park_uses_only_a_clear_bottom_corner() {
         let size = CGSize::new(400., 300.);
         let screen = rect(0., 0., 1000., 1000.);
-        let layouts = [
-            vec![],
-            vec![rect(1000., 0., 1000., 1000.)],
-            vec![
-                rect(0., -1000., 1000., 1000.),
-                rect(0., 1000., 1000., 1000.),
-            ],
-            vec![
-                rect(1000., 0., 1000., 1000.),
-                rect(-1000., 0., 1000., 1000.),
-                rect(500., 1000., 500., 1000.),
-                rect(0., -1000., 500., 1000.),
-            ],
-        ];
-        for others in layouts {
-            let candidates = corner_candidates(size, screen, &others);
-            let least = candidates.iter().map(|&(_, _, overlap)| overlap).fold(f64::MAX, f64::min);
-            let (_, first_least, _) =
-                candidates.into_iter().find(|&(_, _, overlap)| overlap == least).unwrap();
-            assert_eq!(parking_origin(size, screen, &others), first_least, "{others:?}");
-        }
+        assert_eq!(
+            bounded_bottom_corner(size, screen, &[]),
+            Some((CGPoint::new(999., 999.), BottomCorner::Right))
+        );
+        assert_eq!(
+            bounded_bottom_corner(size, screen, &[rect(1000., 0., 1000., 1000.)]),
+            Some((CGPoint::new(-399., 999.), BottomCorner::Left))
+        );
+        assert_eq!(
+            bounded_bottom_corner(
+                size,
+                screen,
+                &[
+                    rect(-1000., 0., 1000., 1000.),
+                    rect(1000., 0., 1000., 1000.)
+                ]
+            ),
+            None
+        );
     }
 
     #[test]

@@ -732,7 +732,7 @@ mod tests {
     }
 
     #[test]
-    fn textedit_clamped_park_is_rejected_and_keeps_the_original_frame() {
+    fn textedit_clamped_park_is_accepted_and_keeps_the_original_frame() {
         let visible = rect(0., 33., 1512., 949.);
         let before = rect(305., 367., 586., 488.);
         let mut s = Setup::on(vec![visible], vec![Some(space())]);
@@ -754,11 +754,66 @@ mod tests {
             None,
         ));
 
-        assert!(matches!(result_of(&s, 2), Response::Error(_)));
-        assert_eq!(ContextKey::Everything, s.reactor.contexts.active());
+        assert_eq!(Response::Success, result_of(&s, 2));
+        assert_eq!(1, s.reactor.parked.len());
+        assert_eq!(rect(1511., 950., 586., 488.), s.reactor.parked[&wid(1)].observed);
         let journal = ParkedJournal::open(s.dir.path().join("parked.json"), SystemTime::now());
         assert_eq!(before, journal.entries()[0].frame.into());
         assert_eq!(1, journal.entries().len());
+        s.reactor.repark_moved_windows().unwrap();
+        assert!(s.apps.requests().into_iter().all(|request| {
+            !matches!(request, Request::SetWindowFrame(window, ..) if window == wid(1))
+        }));
+    }
+
+    #[test]
+    fn a_33_point_bottom_strip_aborts_and_keeps_the_restore_frame() {
+        let visible = rect(0., 33., 1512., 949.);
+        let before = rect(305., 367., 586., 488.);
+        let mut s = Setup::on(vec![visible], vec![Some(space())]);
+        let mut window = make_window(1);
+        window.frame = before;
+        s.reactor.handle_events(s.apps.make_app(1, vec![window]));
+        s.reactor.handle_event(Event::StartupComplete);
+        s.apps.simulate_until_quiet(&mut s.reactor);
+        s.reactor.windows.get_mut(&wid(1)).unwrap().frame_monotonic = before;
+        s.apps.windows.get_mut(&wid(1)).unwrap().frame = before;
+        let (_, txid) = start_park_command(&mut s, 20);
+
+        s.reactor.handle_event(Event::WindowFrameChanged(
+            wid(1),
+            rect(1511., 949., 586., 488.),
+            txid,
+            Requested(true),
+            None,
+        ));
+
+        assert!(matches!(result_of(&s, 20), Response::Error(_)));
+        assert_eq!(ContextKey::Everything, s.reactor.contexts.active());
+        assert!(s.reactor.parked.is_empty());
+        let journal = ParkedJournal::open(s.dir.path().join("parked.json"), SystemTime::now());
+        assert_eq!(before, journal.entries()[0].frame.into());
+    }
+
+    #[test]
+    fn a_ws_visible_nonmember_without_a_frame_on_a_display_cannot_switch() {
+        let mut s = Setup::new(1);
+        let offscreen = rect(3000., 100., 100., 100.);
+        s.reactor.windows.get_mut(&wid(1)).unwrap().frame_monotonic = offscreen;
+        s.apps.windows.get_mut(&wid(1)).unwrap().frame = offscreen;
+        let wsid = s.reactor.windows[&wid(1)].window_server_id.unwrap();
+        assert!(s.reactor.visible_windows.contains(&wsid));
+        let empty = s.reactor.contexts.create("Empty").unwrap();
+
+        s.reactor.handle_event(Event::ContextCommandRequested(
+            RequestId(21),
+            ContextCommand::SwitchContext(ContextRef::Id(empty)),
+        ));
+
+        assert!(matches!(result_of(&s, 21), Response::Error(_)));
+        assert_eq!(ContextKey::Everything, s.reactor.contexts.active());
+        assert!(s.reactor.parked.is_empty());
+        assert!(!s.dir.path().join("parked.json").exists());
     }
 
     #[test]
@@ -813,7 +868,8 @@ mod tests {
         let (old_target, old_txid) = start_park_command(&mut s, 9);
         let deadline = s.reactor.next_parking_deadline().unwrap();
         s.reactor.screens[0].frame = rect(0., 0., 1200., 800.);
-        s.reactor.repark_moved_windows(false);
+        s.reactor.screens[0].bounds = rect(0., 0., 1200., 800.);
+        _ = s.reactor.repark_moved_windows();
         let (target, txid) = s
             .apps
             .requests()

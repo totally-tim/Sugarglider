@@ -473,8 +473,8 @@ fn r25_a_switch_that_raises_nothing_waits_for_the_echo_of_every_window_it_parked
     assert_eq!(d, s.reactor.contexts.active());
 }
 
-/// R25. A same-context switch must also wait for a strict repark of a window
-/// that its app moved after an earlier, routine repark was refused.
+/// R25. A same-context switch must wait for a strict repark when an app moves
+/// a window again while an earlier routine repark is still awaiting readback.
 #[test]
 fn r25_a_strict_repark_without_a_raise_holds_external_focus_until_readback() {
     let (mut s, c, d, other) = three_windows_under_everything();
@@ -494,17 +494,9 @@ fn r25_a_strict_repark_without_a_raise_holds_external_focus_until_readback() {
     ));
     let routine = s.apps.requests();
     assert_eq!(1, frame_writes(&routine, other).len());
-    let routine_txid = s.reactor.windows[&other].last_sent_txid;
-    s.apps.windows.get_mut(&other).unwrap().last_seen_txid = routine_txid;
-    s.reactor.handle_event(Event::WindowFrameChanged(
-        other,
-        moved,
-        routine_txid,
-        Requested(true),
-        None,
-    ));
+    s.reactor.parked.get_mut(&other).unwrap().observed = moved;
     assert_eq!(c, s.reactor.contexts.active());
-    assert!(s.reactor.next_parking_deadline().is_none());
+    assert!(s.reactor.next_parking_deadline().is_some());
 
     s.command(c);
     let strict = s.apps.requests();
@@ -548,15 +540,7 @@ fn r25_an_older_finder_deadline_keeps_a_later_strict_repark_guarded() {
     ));
     let routine = s.apps.requests();
     assert_eq!(1, frame_writes(&routine, other).len());
-    let routine_txid = s.reactor.windows[&other].last_sent_txid;
-    s.apps.windows.get_mut(&other).unwrap().last_seen_txid = routine_txid;
-    s.reactor.handle_event(Event::WindowFrameChanged(
-        other,
-        moved,
-        routine_txid,
-        Requested(true),
-        None,
-    ));
+    s.reactor.parked.get_mut(&other).unwrap().observed = moved;
 
     s.command(empty);
     let strict = s.apps.requests();
@@ -606,15 +590,7 @@ fn strict_repark_with_finder_wait() -> (Setup, ContextKey, ContextKey, WindowId,
     ));
     let routine = s.apps.requests();
     assert_eq!(1, frame_writes(&routine, wid(1)).len());
-    let routine_txid = s.reactor.windows[&wid(1)].last_sent_txid;
-    s.apps.windows.get_mut(&wid(1)).unwrap().last_seen_txid = routine_txid;
-    s.reactor.handle_event(Event::WindowFrameChanged(
-        wid(1),
-        moved,
-        routine_txid,
-        Requested(true),
-        None,
-    ));
+    s.reactor.parked.get_mut(&wid(1)).unwrap().observed = moved;
 
     s.command(empty);
     let strict = s.apps.requests();

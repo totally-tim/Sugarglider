@@ -1,14 +1,14 @@
 // Copyright The Glide Authors
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! Parking hides a window by moving it into a corner of its screen, so that
-//! only 1 point of it stays on screen.
+//! Parking hides a window at a bottom corner of its screen, leaving no more
+//! than a 1-by-32-point strip on that display.
 
 use std::io;
 use std::time::{Duration, Instant};
 
 use objc2_core_foundation::{CGRect, CGSize};
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info};
 
 use super::animation::Animation;
 use super::{MAX_REPARKS, Reactor, TransactionId, fit_frame_to_screen};
@@ -16,9 +16,10 @@ use crate::actor::app::{WindowId, pid_t};
 use crate::actor::contexts_snapshot::RequestId;
 use crate::actor::parked_journal::JournalEntry;
 use crate::collections::{HashMap, HashSet};
-use crate::model::parking_origin;
+use crate::model::{BottomCorner, accepted_bottom_strip, bounded_bottom_corner};
 use crate::sys::app::Process;
-use crate::sys::geometry::{CGRectExt, SameAs};
+use crate::sys::geometry::CGRectExt;
+use crate::sys::screen::ScreenId;
 use crate::sys::window_server::WindowServerId;
 
 /// Finds the process that has a pid now.
@@ -53,6 +54,10 @@ pub(super) struct Parked {
     /// that its app or the window server reported since. It never reaches the
     /// layout.
     pub(super) observed: CGRect,
+    /// The display and window-server identity selected when the write began.
+    screen: ScreenId,
+    corner: BottomCorner,
+    wsid: WindowServerId,
     /// A context parking write waiting for AX frame readback.
     awaiting: Option<(TransactionId, Instant)>,
 }
@@ -68,6 +73,9 @@ pub(super) struct Parking {
     wid: WindowId,
     frame: CGRect,
     corner: CGRect,
+    screen: ScreenId,
+    side: BottomCorner,
+    wsid: WindowServerId,
 }
 
 impl Reactor {
@@ -79,56 +87,109 @@ impl Reactor {
         expect(dead_code, reason = "switches park through journal_parking")
     )]
     pub(super) fn park_windows(&mut self, wids: &[WindowId]) -> io::Result<Vec<WindowId>> {
-        let parking = self.journal_parking(wids)?;
+        let parking = self.journal_parking_with_policy(wids, false)?;
         Ok(self.move_to_corners(parking))
     }
 
     /// Writes the journal entries of the windows that can be parked, and
     /// returns where each goes. No window moves yet.
     ///
-    /// If the write fails, nothing changes. Windows that are already parked,
-    /// that have no window server id, or that are on no screen are left out.
-    /// A window listed more than once is taken once.
+    /// If a visible window cannot be parked or the journal write fails,
+    /// nothing changes. A window listed more than once is taken once.
     ///
-    /// A window that shows 1 square point or less of its screen, as a parked
-    /// window does, keeps the frame in its journal entry. Without an entry it
-    /// is left out, because no frame is known to put it back to.
+    /// A window still at a parked corner or bottom strip keeps the original
+    /// frame in its journal entry. Without an entry there is no safe frame to
+    /// restore, so the park fails.
     pub(super) fn journal_parking(&mut self, wids: &[WindowId]) -> io::Result<Vec<Parking>> {
+        self.journal_parking_with_policy(wids, true)
+    }
+
+    fn journal_parking_with_policy(
+        &mut self,
+        wids: &[WindowId],
+        require_visible: bool,
+    ) -> io::Result<Vec<Parking>> {
         let mut entries = vec![];
         let mut parking: Vec<Parking> = vec![];
         for &wid in wids {
             if self.parked.contains_key(&wid) || parking.iter().any(|p| p.wid == wid) {
                 continue;
             }
-            let Some(window) = self.windows.get(&wid) else { continue };
-            if !self.apps.contains_key(&wid.pid) {
+            let Some(window) = self.windows.get(&wid) else {
+                if require_visible {
+                    return Err(io::Error::other(format!("Cannot find visible window {wid:?}")));
+                }
+                continue;
+            };
+            let Some(app) = self.apps.get(&wid.pid) else {
+                if require_visible {
+                    return Err(io::Error::other(format!(
+                        "Cannot find app for visible window {wid:?}"
+                    )));
+                }
+                continue;
+            };
+            let Some(wsid) = window.window_server_id else {
+                if require_visible {
+                    return Err(io::Error::other(format!(
+                        "Cannot park visible window {wid:?} without a window-server id"
+                    )));
+                }
+                continue;
+            };
+            if require_visible
+                && (self.window_ids.get(&wsid) != Some(&wid)
+                    || !self.visible_windows.contains(&wsid))
+            {
+                return Err(io::Error::other(format!(
+                    "Cannot confirm the visible window-server identity of {wid:?}"
+                )));
+            }
+            let current = window.frame_monotonic;
+            if self
+                .screens
+                .iter()
+                .all(|screen| screen.bounds.intersection(&current).area() == 0.0)
+            {
+                if require_visible {
+                    return Err(io::Error::other(format!(
+                        "Visible window {wid:?} has no frame on a display"
+                    )));
+                }
                 continue;
             }
-            let Some(wsid) = window.window_server_id else {
-                debug!(?wid, "Not parking a window without a window server id");
-                continue;
-            };
-            let current = window.frame_monotonic;
-            let Some(corner) = self.parked_frame(current) else {
-                debug!(?wid, ?current, "Not parking a window that is on no screen");
-                continue;
-            };
-            let frame = if !self.shows_at_most_a_point(current) {
-                current
-            } else if let Some(entry) = self.journal.get(wid.pid, wsid) {
-                // The window was put back, but no write has moved it out of
-                // its corner.
-                CGRect::from(entry.frame)
-            } else {
-                debug!(
-                    ?wid,
-                    ?current,
-                    "Not parking a window that is already in a corner"
-                );
-                continue;
-            };
-            entries.extend(self.journal_entry(wid, frame));
-            parking.push(Parking { wid, frame, corner });
+            let frame =
+                if !self.shows_at_most_a_point(current) && !self.looks_like_parked_strip(current) {
+                    current
+                } else if let Some(entry) = self.journal.get(wid.pid, wsid) {
+                    if !same_app(&entry.bundle_id, &app.info.bundle_id) {
+                        return Err(io::Error::other(format!(
+                            "Cannot use a parked-window journal entry from another app for {wid:?}"
+                        )));
+                    }
+                    CGRect::from(entry.frame)
+                } else {
+                    if require_visible {
+                        return Err(io::Error::other(format!(
+                            "Cannot park {wid:?} without its original journal frame"
+                        )));
+                    }
+                    continue;
+                };
+            let (corner, screen, side) = self.parking_target(frame).ok_or_else(|| {
+                io::Error::other(format!("No clear bottom parking corner for {wid:?}"))
+            })?;
+            entries.push(self.journal_entry(wid, frame).ok_or_else(|| {
+                io::Error::other(format!("Cannot journal visible window {wid:?}"))
+            })?);
+            parking.push(Parking {
+                wid,
+                frame,
+                corner,
+                screen,
+                side,
+                wsid,
+            });
         }
         if !parking.is_empty() {
             self.journal.record(entries)?;
@@ -151,12 +212,13 @@ impl Reactor {
     /// Parks each parked window again when it isn't in the corner that parks
     /// it on the displays as they are now. A frame from before parking that
     /// is on no screen now moves onto a screen, and the window's journal
-    /// entry changes before the window moves. If that write fails, those
-    /// windows stay where they are. While no screen shows a managed Space, as
-    /// at the login window, nothing moves.
-    pub(super) fn repark_moved_windows(&mut self, confirm_for_switch: bool) {
+    /// entry changes before the window moves. If any target, retry cap, or
+    /// journal write fails, the context ends and parked windows are restored.
+    /// While no screen shows a managed Space, as at the login window, nothing
+    /// moves.
+    pub(super) fn repark_moved_windows(&mut self) -> Result<(), String> {
         if self.screens.iter().all(|screen| screen.space.is_none()) {
-            return;
+            return Ok(());
         }
         let mut wids: Vec<WindowId> = self.parked.keys().copied().collect();
         wids.sort();
@@ -165,69 +227,96 @@ impl Reactor {
         for wid in wids {
             let parked = self.parked[&wid];
             let before = self.on_a_screen(parked.before, parked.observed);
-            let Some(corner) = self.parked_frame(before) else {
-                continue;
+            let Some((corner, screen, side)) = self.parking_target(before) else {
+                let reason = format!("No clear bottom parking corner for {wid:?}");
+                self.abort_failed_parking(reason.clone());
+                return Err(reason);
             };
-            if before == parked.before && corner.same_as(parked.observed) {
+            if before == parked.before
+                && screen == parked.screen
+                && side == parked.corner
+                && self.accepts_parked_frame(parked.observed, corner.size, screen, side)
+            {
                 continue;
+            }
+            if self.repark_counts.get(&wid).copied().unwrap_or_default() >= MAX_REPARKS {
+                let reason = format!("Window {wid:?} exceeded the parked-frame retry limit");
+                self.abort_failed_parking(reason.clone());
+                return Err(reason);
+            }
+            let identity_matches = self.windows.get(&wid).is_some_and(|window| {
+                window.window_server_id == Some(parked.wsid)
+                    && self.window_ids.get(&parked.wsid) == Some(&wid)
+            }) && self.apps.get(&wid.pid).is_some_and(|app| {
+                self.journal.get(wid.pid, parked.wsid).is_some_and(|entry| {
+                    same_app(&entry.bundle_id, &app.info.bundle_id)
+                        && CGRect::from(entry.frame) == parked.before
+                })
+            });
+            if !identity_matches {
+                let reason = format!(
+                    "Cannot repark window {wid:?} without its original identity and journal frame"
+                );
+                self.abort_failed_parking(reason.clone());
+                return Err(reason);
             }
             if before != parked.before {
                 let Some(entry) = self.journal_entry(wid, before) else {
-                    continue;
+                    let reason = format!("Cannot journal moved parked window {wid:?}");
+                    self.abort_failed_parking(reason.clone());
+                    return Err(reason);
                 };
                 entries.push(entry);
             }
-            moves.push((wid, before, corner));
+            moves.push((wid, before, corner, screen, side));
         }
-        let journaled = entries.is_empty()
-            || match self.journal.record(entries) {
-                Ok(()) => true,
-                Err(err) => {
-                    error!("Could not write the parked-window journal: {err}");
-                    false
-                }
-            };
+        if !entries.is_empty()
+            && let Err(err) = self.journal.record(entries)
+        {
+            let reason = format!("Could not write the moved parked-window journal: {err}");
+            self.abort_failed_parking(reason.clone());
+            return Err(reason);
+        }
         let mut writes = vec![];
-        for (wid, before, corner) in moves {
-            let reparks = self.repark_counts.entry(wid).or_default();
-            if *reparks >= MAX_REPARKS {
-                if *reparks == MAX_REPARKS {
-                    warn!(
-                        ?wid,
-                        "An app keeps moving its parked window back; leaving it there \
-                         until the next switch or space change"
-                    );
-                    *reparks += 1;
-                }
-                continue;
-            }
-            *reparks += 1;
+        for (wid, before, corner, screen, side) in moves {
+            *self.repark_counts.entry(wid).or_default() += 1;
             let parked = self.parked.get_mut(&wid).expect("the window is parked");
             if before != parked.before {
-                if !journaled {
-                    continue;
-                }
                 parked.before = before;
             }
+            parked.screen = screen;
+            parked.corner = side;
             parked.observed = corner;
             writes.push((wid, corner));
         }
         if !writes.is_empty() {
             info!(count = writes.len(), "Parking windows again in valid corners");
-            self.write_frames_now(&writes, confirm_for_switch);
+            self.write_frames_now(&writes, true);
         }
+        Ok(())
     }
 
     /// Moves windows whose journal entries are written into their corners,
     /// and returns them.
     pub(super) fn move_to_corners(&mut self, parking: Vec<Parking>) -> Vec<WindowId> {
         let mut writes = vec![];
-        for Parking { wid, frame, corner } in parking {
+        for Parking {
+            wid,
+            frame,
+            corner,
+            screen,
+            side,
+            wsid,
+        } in parking
+        {
             self.parked.insert(
                 wid,
                 Parked {
                     before: frame,
                     observed: corner,
+                    screen,
+                    corner: side,
+                    wsid,
                     awaiting: None,
                 },
             );
@@ -332,10 +421,8 @@ impl Reactor {
             .is_none_or(|idx| self.screens[idx].frame.intersection(&frame).area() <= 1.0)
     }
 
-    /// The frame that parks a window now at `frame`. It keeps 1 point in a
-    /// corner of the visible frame of the window's screen, and the corner is
-    /// chosen to stay clear of the full bounds of the other displays.
-    fn parked_frame(&self, frame: CGRect) -> Option<CGRect> {
+    /// A safe bottom corner on the display that held `frame` before parking.
+    fn parking_target(&self, frame: CGRect) -> Option<(CGRect, ScreenId, BottomCorner)> {
         let screen = self.best_screen_idx_for_window(&frame)?;
         let others: Vec<CGRect> = self
             .screens
@@ -344,8 +431,47 @@ impl Reactor {
             .filter(|&(idx, _)| idx != screen)
             .map(|(_, other)| other.bounds)
             .collect();
-        let origin = parking_origin(frame.size, self.screens[screen].frame, &others);
-        Some(CGRect { origin, size: frame.size })
+        let own = self.screens[screen];
+        let (origin, side) = bounded_bottom_corner(frame.size, own.bounds, &others)?;
+        Some((CGRect { origin, size: frame.size }, own.id, side))
+    }
+
+    /// Recognizes a surviving parked strip only when the journal can supply
+    /// its original frame. A strip alone is never used as the restore frame.
+    fn looks_like_parked_strip(&self, frame: CGRect) -> bool {
+        self.screens.iter().enumerate().any(|(idx, own)| {
+            let others: Vec<CGRect> = self
+                .screens
+                .iter()
+                .enumerate()
+                .filter(|&(other, _)| other != idx)
+                .map(|(_, screen)| screen.bounds)
+                .collect();
+            [BottomCorner::Left, BottomCorner::Right]
+                .into_iter()
+                .any(|side| accepted_bottom_strip(frame, frame.size, own.bounds, &others, side))
+        })
+    }
+
+    fn accepts_parked_frame(
+        &self,
+        observed: CGRect,
+        requested_size: CGSize,
+        screen: ScreenId,
+        side: BottomCorner,
+    ) -> bool {
+        let Some((idx, own)) = self.screens.iter().enumerate().find(|(_, own)| own.id == screen)
+        else {
+            return false;
+        };
+        let others: Vec<CGRect> = self
+            .screens
+            .iter()
+            .enumerate()
+            .filter(|&(other, _)| other != idx)
+            .map(|(_, screen)| screen.bounds)
+            .collect();
+        accepted_bottom_strip(observed, requested_size, own.bounds, &others, side)
     }
 
     /// Writes the frames at once, without animation and outside the layout.
@@ -415,7 +541,7 @@ impl Reactor {
             .collect()
     }
 
-    /// Accepts a parking write only when AX reports the corner that was sent.
+    /// Accepts a parking write only when AX reports a bounded bottom strip.
     /// An ordinary requested echo may carry the frame an app actually allowed,
     /// even after the app thread exhausted its retries.
     pub(super) fn park_write_echoed(
@@ -424,21 +550,33 @@ impl Reactor {
         reported: CGRect,
         txid: TransactionId,
     ) -> bool {
-        let Some(parked) = self.parked.get_mut(&wid) else {
+        let Some(parked) = self.parked.get(&wid).copied() else {
             return true;
         };
         if parked.awaiting.map(|(awaited, _)| awaited) != Some(txid) {
             return true;
         }
-        parked.observed = reported;
-        let target = self.windows[&wid].frame_monotonic;
-        if !reported.same_as(target) {
+        let window = &self.windows[&wid];
+        let target = window.frame_monotonic;
+        let identity_matches = window.window_server_id == Some(parked.wsid)
+            && self.window_ids.get(&parked.wsid) == Some(&wid)
+            && self.apps.get(&wid.pid).is_some_and(|app| {
+                self.journal
+                    .get(wid.pid, parked.wsid)
+                    .is_some_and(|entry| same_app(&entry.bundle_id, &app.info.bundle_id))
+            });
+        if !identity_matches
+            || !self.accepts_parked_frame(reported, target.size, parked.screen, parked.corner)
+        {
             let reason = format!(
-                "Could not park window {wid:?}: AX reported {reported:?} instead of {target:?}"
+                "Could not park window {wid:?}: AX reported {reported:?} for {target:?} \
+                 without a verified bottom strip and window identity"
             );
             self.abort_failed_parking(reason);
             return false;
         }
+        let parked = self.parked.get_mut(&wid).expect("parked window was checked");
+        parked.observed = reported;
         parked.awaiting = None;
         self.confirm_parking_result(wid, txid);
         true
@@ -509,8 +647,9 @@ impl Reactor {
         );
         let parked: Vec<WindowId> = self.parked.keys().copied().collect();
         let released = self.release_parked(&parked);
-        self.put_back_unplaced(&released);
         self.apply_again();
+        self.put_back_unplaced(&released);
+        self.update_layout(&[], true);
         self.save_contexts();
     }
 
@@ -638,6 +777,7 @@ mod tests {
     use crate::actor::app::{Quiet, Request, WindowId, pid_t};
     use crate::actor::layout::{LayoutCommand, LayoutEvent, LayoutManager};
     use crate::actor::parked_journal::{FailingWrites, JournalEntry, ParkedJournal};
+    use crate::model::contexts::ContextKey;
     use crate::sys::app::{Process, WindowInfo};
     use crate::sys::event::MouseState;
     use crate::sys::geometry::CGRectExt;
@@ -813,7 +953,7 @@ mod tests {
     }
 
     #[test]
-    fn h1_parks_in_a_corner_clear_of_the_other_displays_full_bounds() {
+    fn h1_refuses_a_display_whose_bottom_corners_reach_another_displays_bounds() {
         let mut apps = Apps::new();
         let mut reactor = Reactor::new_for_test(LayoutManager::new_for_test());
         // A display above the main display. Both have a 25-point menu bar.
@@ -838,14 +978,9 @@ mod tests {
         reactor.handle_event(Event::StartupComplete);
         apps.simulate_until_quiet(&mut reactor);
 
-        reactor.park_windows(&[wid(1)]).unwrap();
-
-        // A bottom corner would reach into the main display's menu bar, which
-        // its visible frame leaves out.
-        assert_eq!(
-            vec![rect(1919., -1074., 400., 20.)],
-            frame_writes(&apps.requests(), wid(1))
-        );
+        assert!(reactor.park_windows(&[wid(1)]).is_err());
+        assert!(apps.requests().is_empty());
+        assert!(reactor.parked.is_empty());
     }
 
     #[test]
@@ -2364,7 +2499,7 @@ mod tests {
     }
 
     #[test]
-    fn h2_a_window_parked_on_the_middle_of_three_displays_keeps_its_space() {
+    fn h1_a_middle_display_without_a_clear_bottom_corner_is_not_parked() {
         let (mut reactor, mut apps) = three_displays();
         let middle = rect(0., 25., 1000., 975.);
         let right = rect(1000., 25., 1000., 975.);
@@ -2375,36 +2510,10 @@ mod tests {
         };
         assert_eq!([vec![(wid(1), middle)], vec![(wid(2), right)]], tiles(&reactor));
 
-        reactor.park_windows(&[wid(1)]).unwrap();
-        apps.simulate_until_quiet(&mut reactor);
-        // Every corner of the middle display reaches into a neighbor, and this
-        // one shows more of the right display than of the middle one.
-        let corner = rect(999., 999., 1000., 975.);
-        assert_eq!(corner, apps.windows[&wid(1)].frame);
-        assert_eq!(Some(2), reactor.best_screen_idx_for_window(&corner));
-        reactor.update_visible_windows();
-        apps.simulate_until_quiet(&mut reactor);
-
+        assert!(reactor.park_windows(&[wid(1)]).is_err());
+        assert!(apps.requests().is_empty());
+        assert!(reactor.parked.is_empty());
         assert_eq!([vec![(wid(1), middle)], vec![(wid(2), right)]], tiles(&reactor));
-        assert_eq!(right, apps.windows[&wid(2)].frame);
-        assert_eq!(Some(wid(1)), reactor.main_window());
-        assert_eq!(Some(SpaceId::new(1)), reactor.main_window_space());
-        reactor.update_active_screen();
-        assert_eq!(Some(0), reactor.active_screen_idx);
-
-        // The layout loses the window, and the window shows again. A parked
-        // window is never added to a layout, but the window list takes it back
-        // to the Space it had before parking.
-        reactor.send_layout_event(LayoutEvent::WindowRemoved(wid(1)));
-        reactor.handle_event(Event::WindowBecameVisible(wid(1)));
-        apps.simulate_until_quiet(&mut reactor);
-        assert_eq!([vec![], vec![(wid(2), right)]], tiles(&reactor));
-        reactor.update_visible_windows();
-        apps.simulate_until_quiet(&mut reactor);
-        assert_eq!([vec![(wid(1), middle)], vec![(wid(2), right)]], tiles(&reactor));
-
-        reactor.unpark_windows(&[wid(1)]);
-        assert_eq!(vec![middle], frame_writes(&apps.requests(), wid(1)));
     }
 
     #[test]
@@ -2496,19 +2605,40 @@ mod tests {
     fn h1_r30_a_window_is_not_parked_again_before_its_new_journal_entry_is_written() {
         let (mut reactor, mut apps, dir) = parked_on_the_right_display();
         let right = rect(1000., 0., 1000., 1000.);
-        let corner = rect(1999., 999., 1000., 1000.);
 
         let failing = FailingWrites::start(dir.path());
         reactor.handle_event(displays(vec![rect(0., 0., 1000., 1000.)]));
         drop(failing);
 
-        assert!(frame_writes(&apps.requests(), wid(1)).is_empty());
-        assert_eq!(
-            Some(right),
-            reactor.parked.get(&wid(1)).map(|parked| parked.before)
-        );
-        assert_eq!(corner, reactor.windows[&wid(1)].frame_monotonic);
+        assert!(!frame_writes(&apps.requests(), wid(1)).is_empty());
+        assert!(reactor.parked.is_empty());
+        assert_eq!(ContextKey::Everything, reactor.contexts.active());
         assert_eq!(vec![entry(1, 1, right)], journal_in(&dir));
+    }
+
+    #[test]
+    fn repark_preflights_the_whole_batch_before_changing_any_journal_entry() {
+        let mut s = Setup::new(3);
+        s.reactor.park_windows(&[wid(2), wid(3)]).unwrap();
+        s.apps.simulate_until_quiet(&mut s.reactor);
+        let original = s.journal_on_disk();
+        assert_eq!(2, original.len());
+
+        let shifted = rect(1000., 0., 1000., 1000.);
+        s.reactor.screens[0].frame = shifted;
+        s.reactor.screens[0].bounds = shifted;
+        s.reactor.repark_counts.insert(wid(3), super::MAX_REPARKS);
+        let error = s.reactor.repark_moved_windows().unwrap_err();
+
+        assert!(error.contains("retry limit"));
+        assert_eq!(original, s.journal_on_disk());
+        assert!(s.reactor.parked.is_empty());
+        assert_eq!(ContextKey::Everything, s.reactor.contexts.active());
+        assert!(
+            frame_writes(&s.apps.requests(), wid(2))
+                .iter()
+                .all(|frame| frame.origin.x != 1999.)
+        );
     }
 
     #[test]

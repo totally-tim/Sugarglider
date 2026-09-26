@@ -614,8 +614,7 @@ fn r39_a_parked_window_that_its_app_moves_back_is_parked_again_at_once() {
 }
 
 /// R39, Q1. An app that moves its parked window back after every write is
-/// parked again at most five times since the last switch, so Sugarglider
-/// doesn't loop with the app. The next switch lets it park the window again.
+/// parked again at most five times. A sixth movement ends the context.
 #[test]
 fn r39_an_app_that_keeps_moving_its_parked_window_back_is_parked_five_times() {
     let mut s = Setup::new(2);
@@ -642,10 +641,9 @@ fn r39_an_app_that_keeps_moving_its_parked_window_back_is_parked_five_times() {
     s.apps.simulate_until_quiet(&mut s.reactor);
 
     assert_eq!(5, writes);
-    assert_eq!(moved, s.frame(wid(2)));
-    assert_eq!(vec![wid(2)], s.parked());
+    assert_eq!(ContextKey::Everything, s.reactor.contexts.active());
+    assert!(s.parked().is_empty());
 
-    s.switch(ContextKey::Everything);
     s.switch(c);
     assert_eq!(parked_at, s.frame(wid(2)));
     let txid = s.reactor.windows[&wid(2)].last_sent_txid;
