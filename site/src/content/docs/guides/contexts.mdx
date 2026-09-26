@@ -3,10 +3,10 @@ title: Contexts (experimental)
 description: Named sets of windows with their own tiling layouts
 ---
 
-Contexts are an experimental feature: named sets of windows that you switch between. Each context keeps its own tiling layout. Switching to a context shows its windows in that layout and hides every other window by parking it in a screen corner, with one pixel left on screen. Sugarglider closes nothing, and a window can belong to several contexts.
+Contexts are an experimental feature: named sets of windows that you switch between. Each context keeps its own tiling layout. Switching shows its windows and parks the others at a bottom corner. A parked window may leave a strip up to 1 point wide and 32 points tall on its display. Sugarglider closes nothing, and a window can belong to several contexts.
 
 :::caution[Experimental]
-Contexts are off by default. The switcher, per-screen scope, and command line are implemented. The physical parking spike and hands-on macOS checks are still pending, so behavior on a live desktop has not been confirmed.
+Contexts are off by default. The switcher, per-screen scope, and command line are implemented. One-display TextEdit parking has been measured, but full context switching, other apps, and two-display behavior still need hands-on macOS checks.
 :::
 
 ## Turn it on
@@ -114,6 +114,8 @@ sugarglider context forget <query> <record>
 ## Safety
 
 Switching never closes a window. Before Sugarglider parks a window, it writes the window's frame to `~/.glide/parked.json`. If Sugarglider quits or crashes, the next launch reads that file and puts the windows back. The contexts and their members live in `~/.glide/contexts.json`. Both files contain window titles.
+
+Sugarglider checks the frame that macOS reports after parking. It accepts only a bottom-corner strip within the 1 by 32 point limit, with no overlap on another display. If a window cannot meet that limit, the context switch fails, Sugarglider shows Everything, and it restores parked windows from their saved frames. Some apps or display arrangements may therefore prevent a context from staying active. One-display TextEdit testing confirmed a 1 by 32 point strip; other apps and two-display setups still need physical QA.
 
 ## Per-screen scope
 

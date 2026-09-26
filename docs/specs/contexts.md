@@ -6,7 +6,7 @@ Code references name symbols first; line numbers are hints and will drift.
 
 Implemented in this integration: the model, switching and membership, parking and the journal, `contexts.json`, IPC, the full command line and Raycast script, menu bar, switcher, per-screen scope, Preferences scope picker, and the user guide.
 
-The M1 physical spike (Q1 to Q4), Q5's target, and the manual QA still need a person. The questions in [What we don't know yet](#what-we-dont-know-yet) have no answers yet, and the checks under Manual QA in [Testing](#testing) haven't run.
+The M1 physical spike has partial one-display TextEdit evidence for Q1. Q1 for other apps and two displays, Q2 to Q4, Q5's target, and manual QA still need a person.
 
 ## Start here
 
@@ -14,7 +14,7 @@ This section is for whoever picks up the work next.
 
 - This working branch integrates M2 through M10. PR #25 remains draft pending the M1 physical spike, Q5's target, and manual QA.
 - The design decisions in [Settled decisions](#settled-decisions) came from the product owner. Build on them; don't reopen them.
-- What is built works whatever the answers to the questions in [What we don't know yet](#what-we-dont-know-yet) turn out to be. The spike ([M1](#m1-spike-answer-the-macos-questions)) runs at the end, and anything it contradicts is fixed then.
+- Q1 has partial one-display TextEdit evidence. The remaining [physical questions](#what-we-dont-know-yet) and [manual QA](#testing) can still require changes.
 - Agent sessions must not start the live window manager (`cargo run`, `sugarglider launch`). See `agents.md`. A person runs the spike and the manual QA checklist. Agents run `cargo test`, `cargo +nightly fmt --check`, and `devtool`.
 - Rules are numbered (R1, R2, …) so commits and tests can cite them. Numbers never change. A new rule takes the next free number, and so do new design items (L, H, I) and questions (Q).
 
@@ -68,7 +68,7 @@ And on 2026-09-26:
 - Global scope ships first. `per_screen` scope follows in its own milestone ([M9](#m9-per-screen-scope)).
 - A window's records survive when its app quits, even if macOS reports the window closed before the app quit (R23).
 - In `per_screen` scope, a window that a switch moves to another screen keeps its saved tile position in the layout of the screen it left. That screen closes the visible gap while the window is away, and the window returns to the saved position (R9).
-- No milestone waits for the spike. Each design works with either answer to Q1 to Q4. A person runs the spike and the manual QA at the end, and anything the spike contradicts is fixed then.
+- The partial Q1 result sets H1's current bound. A person still needs to test other apps and two displays, then complete Q2 to Q4 and manual QA.
 
 ## Terms
 
@@ -78,7 +78,7 @@ And on 2026-09-26:
 - **Active context**: the context a screen shows. In `global` scope, all screens share one active context.
 - **Everything**: a built-in view that shows every window in the Space's normal layout, the layout Sugarglider uses today. You can't add windows to it.
 - **Unsorted**: a built-in context. Its members are the windows that belong to no named context.
-- **Park a window**: move a window to a screen corner so that only 1 pixel stays on screen. AeroSpace uses this for every window it hides. Sugarglider parks every window that must not show.
+- **Park a window**: move a window to a bottom corner so that no more than a 1 by 32 point strip stays on its display. Sugarglider parks every window that must not show.
 - **Journal**: the file `~/.glide/parked.json`. Sugarglider writes each window there before it parks it.
 - **Pinned window**: a window that is a member of every context.
 
@@ -166,7 +166,7 @@ R8, R9, R11, and R26 apply to `per_screen` scope, implemented in [M9](#m9-per-sc
 
   A context, and the pinned list, keeps at most 50 empty records (`MAX_EMPTY_RECORDS`). When a quitting app takes a list over that limit, the oldest empty records go. The records that were empty already go first, then the app's own, each in list order, which is the order the records were added. Lists that hold no record of the app stay as they are. Loading `contexts.json` applies no limit, because every record is empty after a restart. The user removes a record whose window is gone in the edit view or from the command line (`Contexts::remove_record`).
 - **R38.** The reactor decides a window's membership once, the first time it sees the window (`WindowCreated`, `WindowsDiscovered`, or `ApplicationLaunched`). A window whose layer the window server hasn't listed yet waits; the list decides it when it arrives, and the app's own list decides a window the app reports there. This keeps a panel, whose layer is reported after its creation, out of the contexts (R20). The reactor keeps the set of windows it has seen, so R20 and R21 apply only to windows seen for the first time. A window that comes back from being minimized, from a hidden app, or from another Space is not new. Windows that the reactor discovers before `StartupComplete` were open before Sugarglider started. They rejoin their contexts through R21 (`Contexts::rejoin_all` with `MatchPass::Arrival`) or stay unsorted, and R20 never applies to them.
-- **R39.** A known window that becomes visible without taking focus is parked when it must not show (R13), with its journal entry written first (R30). For example, the user unminimizes it or unhides its app, it moves in from another Space, or its app moves it back from its parking spot. If it takes focus, R24 applies instead.
+- **R39.** A known window that becomes visible without taking focus is parked when it must not show (R13), with its journal entry written first (R30). For example, the user unminimizes it or unhides its app, it moves in from another Space, or its app moves it back from its parking spot. If it takes focus, R24 applies instead. A repark uses fresh AX readback and the H1 bound. After five movements that need a repark, or one refused repark, Sugarglider shows Everything and restores parked windows. It does not leave an exposed nonmember under the context.
 
 ### Focus from outside
 
@@ -187,7 +187,7 @@ R8, R9, R11, and R26 apply to `per_screen` scope, implemented in [M9](#m9-per-sc
 
 ### Safety
 
-- **R30.** Before Sugarglider parks a window, it writes the journal entry to disk. If the write fails, it doesn't park. In a switch, a failed write stops the whole switch, and the old context stays active (R12).
+- **R30.** Before Sugarglider parks a window, it writes the journal entry to disk. If the write fails, it doesn't park. In a switch, a failed write stops the whole switch, and the old context stays active (R12). If parking fails while reapplying a context after a Space or visibility change, Sugarglider shows Everything and restores the parked windows.
 - **R31.** Sugarglider removes a journal entry only after it confirms the window is back, or when the window is gone. The window is back when the `Requested(true)` echo of the unpark write (`WindowFrameChanged` with `requested` set) reports a position within 16 points of the target's position (the tolerance Rooms uses); only the position counts, because some apps keep a size of their own. The window is gone on `WindowDestroyed`, or on `ApplicationThreadTerminated` for its app. The reactor clears a window's parked state when it sends the unpark write (H3). The journal entry goes later, when the echo confirms the frame.
 - **R32.** On quit (the Quit menu item and `save_and_exit`, which both send `ReactorCommand::SaveAndExit`), Sugarglider puts every parked window back and reconciles the layouts, as R27 does. It doesn't change the saved active context, so `--restore` and the next launch return to that context. The exit waits for the windows:
   1. `SaveAndExit` starts the unpark and marks the journal entries it expects R31 to confirm: every entry whose window the reactor knows. An entry of an app that hasn't registered can only be put back at the next launch.
@@ -198,7 +198,7 @@ R8, R9, R11, and R26 apply to `per_screen` scope, implemented in [M9](#m9-per-sc
   The deadline uses the reactor's existing 2-second visibility refresh timer (`visibility_timer` in `Reactor::run_reactor_loop`). The first tick that comes at least 2 seconds after `SaveAndExit` ends the wait. The deadline check takes the current `Instant` as an argument, so tests can call it directly. This timer use is a deliberate exception to the rule against new sources of nondeterminism in `CONTRIBUTING.md`. It keeps an app that never answers from blocking the quit.
 - **R33.** When Sugarglider turns off (`toggle_global_enabled`, `sugarglider pause`, or turning off the feature flag), it shows Everything first. When the user turns off one space (`toggle_space_activated`), it shows Everything on that space first. `SpaceManager` handles the global switch and the space toggle (`src/actor/space_manager.rs`, `set_global_enabled` and `toggle_space`). The reactor sees only their result, a `None` Space in `SpaceChanged`, and by then it can't tell which Space to restore. So `SpaceManager` sends the reactor an explicit event, for example `Event::ShowEverythingOn(Vec<SpaceId>)`, before a disable or a toggle changes `active_spaces`. A config reload that turns off the flag reaches the reactor as `ConfigChanged`, and the reactor handles it there. The login window, a locked screen, `one_space`, `default_disable`, and Mission Control keep their current paths and don't show Everything.
 - **R34.** On launch, Sugarglider restores the journal one app at a time. When an app's `ApplicationLaunched` or `WindowsDiscovered` event arrives, Sugarglider restores that app's journal entries. It applies no context to the app's windows until then. At `StartupComplete` it drops the entries whose process is gone or whose pid now belongs to another app, whether or not the reactor registered that app. If the journal can't be read, Sugarglider moves it to `parked.unreadable-<unix time>.json`, logs an error, and starts a new one.
-- **R35.** If Sugarglider dies and nobody starts it again, the user can still reach every window. A parked window still shows 1 pixel in a screen corner, and Mission Control shows it.
+- **R35.** If Sugarglider dies and nobody starts it again, the user must still be able to reach every window. H1 keeps a bottom-corner strip; whether Mission Control shows that window remains a Q1 physical QA check.
 
 ## User interface
 
@@ -447,7 +447,7 @@ This last fact is the main constraint. If a switch made windows invisible, every
   - Deleting a context (R6) calls `LayoutManager::remove_context_layouts`, which calls `remove_layout` on every layout in every mapping of that context. At load, once the reactor has read `contexts.json`, it calls `LayoutManager::retain_context_layouts` to drop the `context_layouts` entries of named contexts that no longer exist. Unsorted's layouts stay.
 - **L3.** When a context gets its first layout on a Space, `create_context_mapping` clones the layout the Space shows (`LayoutTree::clone_layout`) and removes the windows that aren't in `ActiveContext.members`. The layout it clones can be Everything's or another context's. Creating a context keeps the arrangement the user sees. A new constructor, `SpaceLayoutMapping::from_layout(size, layout)`, takes the clone with a reference count of 1.
 - **L4.** When a context layout is active, `WindowsOnScreenUpdated` and `WindowAdded` only add windows that are members. A visible window that isn't a member, and isn't parked yet, never gets a tile. The reactor applies this filter in H2's predicate.
-- **L5.** Parked windows stay in the visible-window list, because 1 pixel stays on screen. H2 keeps them in the window-list updates that reach `set_windows_for_app`, at their frames from before parking, so parking never removes a node. A switch changes the active layout and the reactor's parked set in one reactor event. No visibility update can see a half-finished switch. No timer is involved; `CONTRIBUTING.md` asks us not to add timers.
+- **L5.** The design requires parked windows to remain in the WindowServer visible-window list. H1 leaves a bottom strip, but Q1 has not established whether `OnScreenOnly` lists it. When WindowServer does list a parked window, H2 passes its frame from before parking to `set_windows_for_app`, so parking does not remove its node. A switch changes the active layout and the reactor's parked set in one reactor event. No visibility update can see a half-finished switch.
 - **L6.** Members that the user minimized, or whose app the user hid, leave the active layout as they do today. They stay members.
 - **L7.** `floating_windows`, `floating_restore_frames`, and size locks are keyed by window. In the first version, a floating window shared by two contexts has the same frame in both.
 - **L8.** Reconcile. After a switch activates C's mapping, in the same reactor event, the reactor:
@@ -472,18 +472,18 @@ Facts from the current code:
 
 - `SetWindowFrame` is the only request parking needs. The app requests are `Terminate`, `GetVisibleWindows`, `SetWindowFrame`, `AnimationFrame`, `BeginWindowAnimation`, `EndWindowAnimation`, `Raise`, and `WindowDestroyed` (`src/actor/app.rs`, enum `Request`).
 - A window whose frame is on no screen belongs to no Space and drops out of the layout at the next refresh (`best_screen_idx_for_window`, test `windows_parked_off_screen_belong_to_no_screen`). A window with 1 pixel on screen does belong to that screen.
-- `ScreenInfo` (`src/sys/screen.rs`) and the reactor's `Screen` (`src/actor/reactor.rs`) carry only each display's visible frame, not its full bounds.
+- `ScreenInfo` (`src/sys/screen.rs`) and the reactor's `Screen` (`src/actor/reactor.rs`) carry each display's visible frame and full bounds.
 - A `SetWindowFrame` echo comes back as `WindowFrameChanged` with `requested` set. The reactor handles only minimum sizes there and returns without touching `frame_monotonic` (`Reactor::handle_event`, `Event::WindowFrameChanged`). `update_layout` skips a window whose target equals `frame_monotonic`. It stops writing a target after `MAX_FRAME_ATTEMPTS` (5) tries within `FRAME_ATTEMPT_RESET` (2 seconds).
 - The reactor treats windows of one app that are on screen and share the same rounded frame (`Reactor::frame_key`, `window_on_screen`) as tabs; a parked window and a window that isn't on screen are no tab. `WindowBecameVisible` skips a window that such a sibling covers (`dominated_by_existing`). `WindowDestroyed` skips `WindowRemoved` when a sibling has the same frame (`dominated_by_sibling`). `send_visible_windows_to_layout` keeps one window per frame.
 - Floating windows live outside the tree, in `LayoutManager.floating_windows`. `update_layout` writes only the frames that `calculate_layout_and_groups` returns, plus the one-shot `pending_frame_overrides`.
 
 Design:
 
-- **H1.** Parking sends `SetWindowFrame` to a corner position that keeps 1 pixel on screen. `parking_origin(size, target, others)` in `src/model/parking.rs` ports Rooms' `Geometry.parkingOrigin`. `target` is the visible frame of the window's display, and `others` are the full bounds of the other displays. It tries the four corners of `target` and takes the first one where the parked window overlaps no other display. The reactor needs each display's full bounds (`CGDisplayBounds`) next to its visible frame, in `ScreenInfo` and in the reactor's `Screen`.
-- **H2.** The reactor keeps `parked: HashMap<WindowId, CGRect>`, with the frame from before parking; a parked window's Space is the Space of that frame, not of the corner it sits in. One predicate, `reaches_layout(space, wid)`, decides whether a window may reach the layout: it rejects parked windows, whatever their geometry says, and applies L4's member filter. Every path that sends a layout event for a window applies it: `WindowBecameVisible` (which sends `WindowAdded`), the frame change (`LayoutEvent::WindowFrameChanged`, `WindowResized`, and the `WindowSpaceChanged` of a frame change across screens), `MouseMovedOverWindow`, and `send_visible_windows_to_layout` (the window-server snapshot), which keeps a parked window that shows in a layout, at its frame from before parking, so parking never removes its node (L5). A frame change of a parked window is kept out of the layout entirely; it only updates the window's observed frame and re-parks it when its app moved it out of its corner, at most 5 times since the last switch or Space change; after that it leaves the window where the app put it and warns once.
+- **H1.** Production parking chooses the first clear bottom corner of the window's display, right then left, using the display's full bounds (`bounded_bottom_corner`). The requested frame leaves one point on that display and has no overlap with any other display's full bounds. The app actor reads the frame back from AX after the write. The reactor accepts that readback only for the current window-server ID and transaction, with the same window size within `SameAs` tolerance, no overlap with another display, and a strip touching the selected bottom corner that is wider than zero and at most 1 point wide and 32 points tall (`accepted_bottom_strip`). A top corner, an overlapping display, an unconfirmed write, or a wider strip fails. The context returns to Everything and the original journal frame remains available for restoration. `devtool park` uses this automatic choice and acceptance rule; an explicit `--corner` is a diagnostic probe.
+- **H2.** The reactor keeps each parked window's original frame, selected screen and corner, current window-server ID, observed frame, and awaited write. A parked window's Space is the Space of its original frame, not of the corner it sits in. One predicate, `reaches_layout(space, wid)`, decides whether a window may reach the layout: it rejects parked windows, whatever their geometry says, and applies L4's member filter. Every path that sends a layout event for a window applies it: `WindowBecameVisible` (which sends `WindowAdded`), frame changes, `MouseMovedOverWindow`, and `send_visible_windows_to_layout` (the window-server snapshot). A frame change of a parked window stays out of the layout; it updates the observed frame and can trigger a repark. An accepted bottom strip needs no repark. Before a batch repark, the reactor checks every target, retry cap, and journal entry. If one fails, it writes no new journal entries or repark frames and restores Everything. A refused readback also restores Everything (R39).
 - **H3.** Putting a member back needs no special request. The reconcile (L8) gives the member a node in the active layout, so `update_layout` writes its frame. The reactor clears the member's parked state before that write, and R31 removes the journal entry when the echo confirms the frame. A member the layout doesn't place, a floating member or one with no node, has no tile to return to, so the reactor puts it back at its frame from before parking through `pending_frame_overrides`. Showing Everything puts non-members back at their journal frames (R27).
 - **H4.** Park and unpark writes go through the reactor's frame bookkeeping. Each write takes a new transaction id (`WindowState::next_txid`), so the reactor ignores stale frame reads from before it. Parking sets `frame_monotonic` to the parked frame, so `update_layout` doesn't skip the unpark write as unchanged. Parking and unparking both clear the window's `frame_attempts` entry, so quick switches never reach `MAX_FRAME_ATTEMPTS`.
-- **H5.** Parked windows keep the exact 1-point corner that `parking_origin` returns, so parked windows of one app with the same size share a frame. The tab checks skip parked windows. `dominated_by_existing`, `dominated_by_sibling`, and the frame grouping in `send_visible_windows_to_layout` never treat a parked window as a sibling tab.
+- **H5.** Parked windows retain their actual accepted AX frame, which may be a bottom strip up to 1 by 32 points. The tab checks skip parked windows. `dominated_by_existing`, `dominated_by_sibling`, and the frame grouping in `send_visible_windows_to_layout` never treat a parked window as a sibling tab.
 
 A switch writes one frame per window that it parks or puts back. Q5 measures what that costs.
 
@@ -594,8 +594,8 @@ scope = "global"
 
 These are facts about macOS that the code can't answer. Q1 has partial one-display evidence below. The M1 physical spike remains open for Q1 to Q4, and Q5 still needs a measured target.
 
-- **Q1.** Does macOS keep a window where Sugarglider puts it when only 1 pixel stays on screen? Check all four corners, with one display and with two. Check that the window stays parked when its app is activated, and whether apps move their own parked windows back.
-  - Partial physical evidence, 2026-09-26: Tim tested TextEdit (PID 33920, window-server ID 47821) on one display with Sugarglider stopped. The visible screen frame was `(0, 33, 1512, 949)`, and the window started at `(305, 367, 586, 488)`. Every `devtool park` probe made three attempts. AX returned the same observed frame on all three, and the command reported an error. Tim manually restored the window to exactly `(305, 367, 586, 488)` after each probe.
+- **Q1.** Does macOS keep a window within H1's bottom-strip bound? Check other apps and two displays. Check whether WindowServer `OnScreenOnly` lists the parked window and whether Mission Control shows it. Check that the window stays parked when its app is activated, and whether apps move their own parked windows back.
+  - Partial physical evidence, 2026-09-26: Tim tested TextEdit (PID 33920, window-server ID 47821) on one display with Sugarglider stopped. The visible screen frame was `(0, 33, 1512, 949)`, and the window started at `(305, 367, 586, 488)`. Each probe made three attempts. AX returned the same observed frame on all three. The old devtool's exact-frame check reported an error, and Tim manually restored the window to exactly `(305, 367, 586, 488)` after each probe.
 
     | Probe | Requested frame | AX observed frame | Visible overlap |
     | --- | --- | --- | --- |
@@ -605,7 +605,7 @@ These are facts about macOS that the code can't answer. Q1 has partial one-displ
     | Top left | `(-585, -454, 586, 488)` | `(-585, 33, 586, 488)` | `1 × 488` points |
     | Horizontal edge | `(1512, 950, 586, 488)` | `(1472, 950, 586, 488)` | `40 × 32` points |
 
-    A position-only AX probe is next. Tim has not decided whether the `1 × 32` strip counts as parked. H1's acceptance rule remains open; this one-display TextEdit result does not answer Q1 for other apps, two displays, activation, or app-driven moves.
+    A position-only bottom-right probe requested `(1511, 981, 586, 488)` and again read `(1511, 950, 586, 488)` on all three attempts. AX list confirmed the result, and Tim restored `(305, 367, 586, 488)` exactly. Tim accepted a verified bottom-corner strip up to `1 × 32` points as the production bound. These probes did not check WindowServer `OnScreenOnly` or Mission Control. Other apps, two displays, activation, and app-driven moves also remain open.
 - **Q2.** When Sugarglider parks the focused window, does macOS send an activation or main-window change, and does it arrive with `Quiet::No`? When no member can take focus, does activating Finder (R12, step 6) take key focus away from the parked window? Does Finder report a main-window change after that activation, for example to a parked Finder window?
   - Not blocking. R25's wait covers the switch's own raise and its parking echoes, so it ignores an activation that the switch caused whether or not macOS sends one. If such an activation can arrive after the wait ends, R25's end conditions change. Step 6 of R12 runs whether or not the parked window keeps key focus. If Finder reports a main-window change after its activation, R25's wait for step 6 changes.
 - **Q3.** When the user launches an app, does `ApplicationActivated` or `ApplicationMainWindowChanged` reach the reactor before the new window does (`ApplicationLaunched`, `WindowsDiscovered`, or `WindowCreated`)? Sugarglider keeps each app's events in order (R24), so this is only about the order of the Accessibility notifications.
@@ -637,7 +637,7 @@ M2 through M10 are integrated in this working branch. A person still needs to ru
 ### M3. Parking and the journal
 
 - The park and unpark primitives, with the parked set (H2), the frame bookkeeping (H4), and the tab checks that skip parked windows (H5).
-- Each display's full bounds next to its visible frame, in `ScreenInfo` and the reactor's `Screen`, so the reactor can call `parking_origin` as H1 describes.
+- Each display's full bounds next to its visible frame, in `ScreenInfo` and the reactor's `Screen`, for H1's bottom-corner selection and readback check.
 - The journal with R30 and R31, including the removal of entries on `WindowDestroyed` and `ApplicationThreadTerminated`, and injectable file paths.
 - R34, restoring the journal per app at launch.
 - Extend the test harness (see Implementation traps).
@@ -720,7 +720,7 @@ Model tests (M2):
 
 Parking and journal tests (M3):
 
-- `parking_origin` leaves exactly 1 point on the target display and checks overlap against the other displays' full bounds. A display above one with a menu bar gets a corner that doesn't reach into that menu bar (H1).
+- The production selector uses full display bounds, chooses only a clear bottom corner, and rejects a readback beyond the 1 by 32 point bound or on another display (H1). Repark preflights the whole batch before changing any journal entry.
 - Park and unpark writes take a new transaction id, update `frame_monotonic`, and clear `frame_attempts` (H4).
 - Two parked windows of one app with the same size. One of them closes, and its nodes are removed (H5).
 - A failed journal write parks nothing (R30).
@@ -779,12 +779,13 @@ M5c:
 Manual QA (a person, on a real Mac):
 
 - The spike (M1) for Q1 to Q4.
+- With a window parked, confirm WindowServer `OnScreenOnly` still lists its window-server ID and Mission Control shows it. Check access after a server crash without relaunch (L5, R35).
 - Two displays in both scopes.
 - WhatsApp in two contexts. Chrome with one window in each of two contexts, before and after quitting and relaunching Chrome.
 - Finder windows in and out of a context.
 - ⌘-Tab, a Dock click, and a notification click into another context. Opening a Raycast or 1Password panel from inside a context.
 - A switch to an empty context while typing in a terminal. Keystrokes don't reach the parked terminal (R12, step 6).
-- A display above another display, with windows parked on the upper one (H1).
+- A display above another display; verify the upper display falls back to Everything if neither bottom corner is clear (H1).
 - Quit from the menu with windows parked. Every window is back before the process exits (R32).
 - Lock the screen while a context is active. Nothing comes back from parking (R33).
 - `kill -9` on the server while windows are parked, then relaunch. Also check R35 without relaunching.
