@@ -520,8 +520,8 @@ fn r25_a_strict_repark_without_a_raise_holds_external_focus_until_readback() {
     assert_eq!(d, s.reactor.contexts.active());
 }
 
-/// R25. A second switch can require a new parking echo while an older Finder
-/// wait remains. Expiring the Finder wait must keep that echo guarded.
+/// R25. A second switch can require a new parking echo and a new Finder
+/// activation. The first Finder deadline ends neither wait.
 #[test]
 fn r25_an_older_finder_deadline_keeps_a_later_strict_repark_guarded() {
     let (mut s, _c, d, other) = three_windows_under_everything();
@@ -561,12 +561,13 @@ fn r25_an_older_finder_deadline_keeps_a_later_strict_repark_guarded() {
     s.command(empty);
     let strict = s.apps.requests();
     assert_eq!(1, frame_writes(&strict, other).len());
-    assert_eq!(Some(first_since), s.reactor.switch_guard.since);
+    let second_deadline = s.reactor.next_guard_deadline().unwrap();
+    assert!(second_deadline > first_deadline);
     let strict_deadline = s.reactor.next_parking_deadline().unwrap();
     assert!(strict_deadline > first_deadline);
 
     s.reactor.guard_deadline_tick(first_deadline);
-    assert!(s.reactor.next_guard_deadline().is_none());
+    assert_eq!(Some(second_deadline), s.reactor.next_guard_deadline());
     assert_eq!(Some(strict_deadline), s.reactor.next_switch_deadline());
     s.reactor.guard_deadline_tick(first_deadline + Duration::from_nanos(1));
     assert_eq!(Some(strict_deadline), s.reactor.next_switch_deadline());
@@ -574,7 +575,144 @@ fn r25_an_older_finder_deadline_keeps_a_later_strict_repark_guarded() {
     assert_eq!(empty, s.reactor.contexts.active());
 
     answer(&mut s, strict);
+    assert_eq!(empty, s.reactor.contexts.active());
+    s.reactor.guard_deadline_tick(second_deadline);
     assert_eq!(d, s.reactor.contexts.active());
+}
+
+/// Leave window 1 awaiting a strict repark alongside a Finder wait. Its app
+/// has reported a different frame, and no answer to the strict write will
+/// arrive before the caller releases the window.
+fn strict_repark_with_finder_wait() -> (Setup, ContextKey, ContextKey, WindowId, ContextKey) {
+    let (mut s, c, d, other) = three_windows_under_everything();
+    let _raises = capture_raises(&mut s);
+    launch(&mut s, 9, finder_info(), vec![], &[wid(1), wid(2), other]);
+    let empty = s.create("Empty", &[]);
+    s.command(empty);
+    let initial = s.apps.requests();
+    answer(&mut s, initial);
+    s.apps.simulate_until_quiet(&mut s.reactor);
+    let first_deadline = s.reactor.next_guard_deadline().unwrap();
+
+    let moved = rect(300., 200., 50., 50.);
+    let previous = s.reactor.windows[&wid(1)].last_sent_txid;
+    s.apps.windows.get_mut(&wid(1)).unwrap().frame = moved;
+    s.reactor.handle_event(Event::WindowFrameChanged(
+        wid(1),
+        moved,
+        previous,
+        Requested(false),
+        None,
+    ));
+    let routine = s.apps.requests();
+    assert_eq!(1, frame_writes(&routine, wid(1)).len());
+    let routine_txid = s.reactor.windows[&wid(1)].last_sent_txid;
+    s.apps.windows.get_mut(&wid(1)).unwrap().last_seen_txid = routine_txid;
+    s.reactor.handle_event(Event::WindowFrameChanged(
+        wid(1),
+        moved,
+        routine_txid,
+        Requested(true),
+        None,
+    ));
+
+    s.command(empty);
+    let strict = s.apps.requests();
+    assert_eq!(1, frame_writes(&strict, wid(1)).len());
+    assert!(s.reactor.next_parking_deadline().unwrap() > first_deadline);
+    assert!(s.reactor.next_guard_deadline().is_some());
+    assert!(s.reactor.next_parking_deadline().is_some());
+    (s, c, d, other, empty)
+}
+
+/// R25. A direct switch can release a window whose strict repark echo still
+/// holds an older switch. Its unpark readback is not a parking confirmation.
+#[test]
+fn r25_direct_switch_cancels_the_released_windows_old_parking_echo() {
+    let (mut s, c, d, other, _empty) = strict_repark_with_finder_wait();
+    s.reactor.handle_event(Event::ActivateFailed(9));
+    assert_eq!(Some(wid(1)), s.reactor.main_window());
+
+    s.command(c);
+
+    assert!(!s.reactor.parked.contains_key(&wid(1)));
+    assert!(s.reactor.next_switch_deadline().is_none());
+    assert_eq!(c, s.reactor.contexts.active());
+    // Leave both the old strict write and the new unpark write unanswered.
+    activate(&mut s, 2, other, Order::GloballyFirst);
+    assert_eq!(d, s.reactor.contexts.active());
+}
+
+/// R25. Releasing an old echo during a direct switch cannot apply buffered
+/// outside focus before the new focusing raise has been added to the guard.
+#[test]
+fn r25_releasing_an_echo_during_a_switch_keeps_its_new_raise_guarded() {
+    let (mut s, c, d, other, empty) = strict_repark_with_finder_wait();
+    s.reactor.handle_event(Event::ActivateFailed(9));
+    activate(&mut s, 2, other, Order::GloballyFirst);
+    assert_eq!(empty, s.reactor.contexts.active());
+
+    s.command(c);
+
+    assert_eq!(c, s.reactor.contexts.active());
+    assert!(s.reactor.next_guard_deadline().is_some());
+    end_raises(&mut s);
+    assert_eq!(d, s.reactor.contexts.active());
+}
+
+/// R25. A non-switch unpark cancels the old parking echo. Buffered focus is
+/// reconsidered at the next event boundary, after the unpark has finished.
+#[test]
+fn r25_non_switch_unpark_cancels_the_released_windows_old_parking_echo() {
+    let (mut s, _c, d, other, _empty) = strict_repark_with_finder_wait();
+    s.reactor.handle_event(Event::ActivateFailed(9));
+    activate(&mut s, 2, other, Order::GloballyFirst);
+    assert_ne!(d, s.reactor.contexts.active());
+
+    s.reactor.unpark_windows(&[wid(1)]);
+    assert!(!s.reactor.parked.contains_key(&wid(1)));
+    assert!(s.reactor.next_switch_deadline().is_none());
+    s.reactor.handle_event(Event::ApplicationActivated(2, Quiet::Yes));
+    assert_eq!(d, s.reactor.contexts.active());
+}
+
+/// R25. A finished Finder wait keeps its start time while a parking echo is
+/// outstanding. Releasing the last parked window must clear that time even
+/// when no focus was buffered, so a later Finder wait gets a fresh deadline.
+#[test]
+fn r25_releasing_the_last_echo_without_buffered_focus_resets_guard_time() {
+    let (mut s, c, _d, _other, empty) = strict_repark_with_finder_wait();
+    let old_deadline = s.reactor.next_guard_deadline().unwrap();
+    s.reactor.handle_event(Event::ActivateFailed(9));
+    assert_eq!(
+        Some(old_deadline),
+        s.reactor.switch_guard.since.map(|since| since + Duration::from_secs(2))
+    );
+    assert!(s.reactor.next_guard_deadline().is_none());
+
+    s.command(c);
+    assert!(s.reactor.switch_guard.since.is_none());
+    s.command(empty);
+    assert!(s.reactor.next_guard_deadline().unwrap() > old_deadline);
+}
+
+/// R25. A second focusing raise gets its own two-second wait even when it
+/// starts just before the first one's deadline.
+#[test]
+fn r25_overlapping_raise_gets_a_fresh_deadline() {
+    let TwoApps { mut s, c, d, other } = two_apps();
+    let _raises = capture_raises(&mut s);
+    activate(&mut s, 2, other, Order::GloballyFirst);
+    assert_eq!(d, s.reactor.contexts.active());
+    s.reactor.switch_guard.since = Some(Instant::now() - Duration::from_millis(1900));
+    let old_deadline = s.reactor.next_guard_deadline().unwrap();
+
+    s.command(c);
+
+    let new_deadline = s.reactor.next_guard_deadline().unwrap();
+    assert!(new_deadline > old_deadline);
+    s.reactor.guard_deadline_tick(old_deadline);
+    assert_eq!(Some(new_deadline), s.reactor.next_guard_deadline());
 }
 
 /// R25. A missing parking echo restores Everything at the deadline. A missing

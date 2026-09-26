@@ -229,15 +229,15 @@ impl Reactor {
 
     /// Starts waiting for the end of a switch: its focusing raise and the
     /// verified echo of every window it parked. With `finder`, the
-    /// wait also lasts until Finder's activation arrives or fails. A wait that
-    /// is already on stays on and is extended, so what the earlier switch
-    /// still waited for still ends the wait.
+    /// wait also lasts until Finder's activation arrives or fails. New focus
+    /// actions get a fresh deadline; earlier parking echoes stay guarded.
     fn guard_switch(
         &mut self,
         raise: Option<(u64, WindowId)>,
         parked: &[WindowId],
         finder: Option<pid_t>,
     ) {
+        let new_focus_wait = raise.is_some() || finder.is_some();
         let guard = &mut self.switch_guard;
         guard.echoes.extend(parked);
         match raise {
@@ -253,7 +253,7 @@ impl Reactor {
         if finder.is_some() {
             guard.finder = finder;
         }
-        if guard.since.is_none() && (guard.raise.is_some() || guard.finder.is_some()) {
+        if new_focus_wait {
             guard.since = Some(Instant::now());
         }
         debug!(guard = ?self.switch_guard, "Waiting for the switch to end");
@@ -330,6 +330,21 @@ impl Reactor {
     /// The echo of the last frame write to the window arrived.
     pub(super) fn frame_write_echoed(&mut self, wid: WindowId) {
         if self.switch_guard.echoes.remove(&wid) {
+            self.finish_guard();
+        }
+    }
+
+    /// A released window no longer has a parking write to wait for. The
+    /// caller may still be building a new switch, so focus is settled after
+    /// the current event instead of here.
+    pub(super) fn cancel_parking_echo(&mut self, wid: WindowId) {
+        self.switch_guard.echoes.remove(&wid);
+    }
+
+    pub(super) fn settle_released_parking_guard(&mut self) {
+        if !self.switch_guard.holds()
+            && (self.switch_guard.since.is_some() || self.switch_guard.pending_focus.is_some())
+        {
             self.finish_guard();
         }
     }

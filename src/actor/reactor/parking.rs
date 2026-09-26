@@ -258,6 +258,7 @@ impl Reactor {
                 continue;
             };
             interrupted |= awaiting.is_some();
+            self.cancel_parking_echo(*wid);
             self.frame_attempts.remove(wid);
             self.forced_writes.insert(*wid);
             // The user can't be resizing a window in a corner, and

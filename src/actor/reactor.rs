@@ -915,6 +915,7 @@ impl Reactor {
                 | Event::ScrollWheel { .. }
         );
         self.on_event(event);
+        self.settle_released_parking_guard();
         self.exit_if_windows_are_back();
         if !pointer {
             self.publish_contexts_snapshot();
