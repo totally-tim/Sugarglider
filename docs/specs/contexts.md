@@ -1,12 +1,12 @@
 # Contexts
 
-Status: M2 through M10 are integrated in this working branch behind `settings.experimental.contexts.enable`, which defaults to false. PR #25 remains draft pending physical QA. Written 2026-09-25, revised 2026-09-26.
+Status: M2 through M10 are integrated in this working branch behind `settings.experimental.contexts.enable`, which defaults to false. PR #25 remains draft pending physical QA. Written 2026-09-25, revised 2026-09-27.
 
 Code references name symbols first; line numbers are hints and will drift.
 
 Implemented in this integration: the model, switching and membership, parking and the journal, `contexts.json`, IPC, the full command line and Raycast script, menu bar, switcher, per-screen scope, Preferences scope picker, and the user guide.
 
-The M1 physical spike has partial one-display TextEdit evidence for Q1. Q1 for other apps and two displays, Q2 to Q4, Q5's target, and manual QA still need a person.
+The M1 physical spike has partial one-display TextEdit and Calculator evidence for Q1. Q1 for other apps and two displays, Q2 to Q4, Q5's target, and manual QA still need a person.
 
 ## Start here
 
@@ -14,7 +14,7 @@ This section is for whoever picks up the work next.
 
 - This working branch integrates M2 through M10. PR #25 remains draft pending the M1 physical spike, Q5's target, and manual QA.
 - The design decisions in [Settled decisions](#settled-decisions) came from the product owner. Build on them; don't reopen them.
-- Q1 has partial one-display TextEdit evidence. The remaining [physical questions](#what-we-dont-know-yet) and [manual QA](#testing) can still require changes.
+- Q1 has partial one-display TextEdit and Calculator evidence. The remaining [physical questions](#what-we-dont-know-yet) and [manual QA](#testing) can still require changes.
 - Agent sessions must not start the live window manager (`cargo run`, `sugarglider launch`). See `agents.md`. A person runs the spike and the manual QA checklist. Agents run `cargo test`, `cargo +nightly fmt --check`, and `devtool`.
 - Rules are numbered (R1, R2, …) so commits and tests can cite them. Numbers never change. A new rule takes the next free number, and so do new design items (L, H, I) and questions (Q).
 
@@ -166,6 +166,10 @@ R8, R9, R11, and R26 apply to `per_screen` scope, implemented in [M9](#m9-per-sc
 
   A context, and the pinned list, keeps at most 50 empty records (`MAX_EMPTY_RECORDS`). When a quitting app takes a list over that limit, the oldest empty records go. The records that were empty already go first, then the app's own, each in list order, which is the order the records were added. Lists that hold no record of the app stay as they are. Loading `contexts.json` applies no limit, because every record is empty after a restart. The user removes a record whose window is gone in the edit view or from the command line (`Contexts::remove_record`).
 - **R38.** The reactor decides a window's membership once, the first time it sees the window (`WindowCreated`, `WindowsDiscovered`, or `ApplicationLaunched`). A window whose layer the window server hasn't listed yet waits; the list decides it when it arrives, and the app's own list decides a window the app reports there. This keeps a panel, whose layer is reported after its creation, out of the contexts (R20). The reactor keeps the set of windows it has seen, so R20 and R21 apply only to windows seen for the first time. A window that comes back from being minimized, from a hidden app, or from another Space is not new. Windows that the reactor discovers before `StartupComplete` were open before Sugarglider started. They rejoin their contexts through R21 (`Contexts::rejoin_all` with `MatchPass::Arrival`) or stay unsorted, and R20 never applies to them.
+
+  If the initial AX window query fails after notification registration, the app thread stays registered with an empty first list and retries on the visibility poll. A nonempty AX list marks an omitted known window hidden only while the current WindowServer snapshot lists it; AX can omit windows on another Space. When AX lists that window again, the reactor restores its visible status from the current WindowServer snapshot.
+
+  Before a user switch to a context other than Everything, the reactor rejects a normal-layer WindowServer row on the affected screen if AX has not identified it or has omitted a known nonmember. The old context and journal stay unchanged. If this mismatch occurs while an active context is reapplied, Sugarglider shows Everything and restores parked windows. A closed window can remain briefly in WindowServer's list after Cmd+W, so that case can also cause a fallback. The product owner chose this fail-safe behavior on 2026-09-27.
 - **R39.** A known window that becomes visible without taking focus is parked when it must not show (R13), with its journal entry written first (R30). For example, the user unminimizes it or unhides its app, it moves in from another Space, or its app moves it back from its parking spot. If it takes focus, R24 applies instead. A repark uses fresh AX readback and the H1 bound. After five movements that need a repark, or one refused repark, Sugarglider shows Everything and restores parked windows. It does not leave an exposed nonmember under the context.
 
 ### Focus from outside
@@ -594,7 +598,7 @@ scope = "global"
 
 These are facts about macOS that the code can't answer. Q1 has partial one-display evidence below. The M1 physical spike remains open for Q1 to Q4, and Q5 still needs a measured target.
 
-- **Q1.** Does macOS keep a window within H1's bottom-strip bound? Check other apps and two displays, including whether WindowServer `OnScreenOnly` lists each parked window. Check whether Mission Control shows it, whether it stays parked when its app is activated, and whether apps move their own parked windows back.
+- **Q1.** Does macOS keep a window within H1's bottom-strip bound? Check other apps and two displays, including whether WindowServer `OnScreenOnly` lists each parked window. With two displays showing different Spaces, check whether AX lists both displays' visible windows; omitting one can make the safety check show Everything. Check whether Mission Control shows a parked window, whether it stays parked when its app is activated, and whether apps move their own parked windows back.
   - Partial physical evidence, 2026-09-26: Tim tested TextEdit (PID 33920, window-server ID 47821) on one display with Sugarglider stopped. The visible screen frame was `(0, 33, 1512, 949)`, and the window started at `(305, 367, 586, 488)`. Each probe made three attempts. AX returned the same observed frame on all three. The old devtool's exact-frame check reported an error, and Tim manually restored the window to exactly `(305, 367, 586, 488)` after each probe.
 
     | Probe | Requested frame | AX observed frame | Visible overlap |
