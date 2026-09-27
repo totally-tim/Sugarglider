@@ -1002,13 +1002,16 @@ async fn get_windows_with_ns(_opt: &Opt, print: bool) {
 
 async fn get_windows_with_ax(opt: &Opt, serial: bool, print: bool) {
     let (sender, mut receiver) = mpsc::unbounded_channel();
+    let targeted_list = targeted_ax_list(opt);
+    let mut matched_apps = 0;
     for (pid, bundle_id) in sys::app::running_apps(opt.bundle.clone()) {
+        matched_apps += 1;
         let sender = sender.clone();
         let verbose = opt.verbose;
         let task = move || {
             let app = AXUIElement::application(pid);
             let windows = get_windows_for_app(app, verbose);
-            sender.send((bundle_id, windows)).unwrap()
+            sender.send((pid, bundle_id, windows)).unwrap()
         };
         if serial {
             task();
@@ -1017,8 +1020,17 @@ async fn get_windows_with_ax(opt: &Opt, serial: bool, print: bool) {
         }
     }
     drop(sender);
-    while let Some((info, windows)) = receiver.recv().await {
+    if targeted_list && matched_apps == 0 {
+        println!("{}", ax_list_no_match(opt.bundle.as_deref().unwrap()));
+    }
+    while let Some((pid, info, windows)) = receiver.recv().await {
         //println!("{info:?}");
+        if targeted_list {
+            let result = windows.as_ref().map(Vec::len);
+            if let Some(diagnostic) = ax_list_diagnostic(pid, &info, result) {
+                println!("{diagnostic}");
+            }
+        }
         match windows {
             Ok(windows) => {
                 if print {
@@ -1035,13 +1047,34 @@ async fn get_windows_with_ax(opt: &Opt, serial: bool, print: bool) {
     }
 }
 
+fn targeted_ax_list(opt: &Opt) -> bool {
+    opt.bundle.is_some() && matches!(opt.command, Command::List(List::Ax))
+}
+
+fn ax_list_no_match(bundle_filter: &str) -> String {
+    format!("AX list: no running app matches bundle filter {bundle_filter:?}")
+}
+
+fn ax_list_diagnostic(
+    pid: pid_t,
+    info: &AppInfo,
+    result: Result<usize, &accessibility::Error>,
+) -> Option<String> {
+    let bundle = info.bundle_id.as_deref().unwrap_or("?");
+    match result {
+        Ok(0) => Some(format!("AX list: pid={pid} bundle={bundle}: 0 windows")),
+        Err(err) => Some(format!(
+            "AX list: pid={pid} bundle={bundle}: error reading windows: {err:?}"
+        )),
+        Ok(_) => None,
+    }
+}
+
 fn get_windows_for_app(
     app: CFRetained<AXUIElement>,
     verbose: bool,
 ) -> Result<Vec<(WindowInfo, String)>, accessibility::Error> {
-    let Ok(windows) = &app.windows() else {
-        return Err(accessibility::Error::NotFound);
-    };
+    let windows = app.windows()?;
     windows
         .iter()
         .map(|win| {
@@ -1073,11 +1106,50 @@ mod tests {
     use clap::Parser;
     use objc2_core_foundation::{CGPoint, CGRect, CGSize};
     use sugarglider::model::{BottomCorner, bounded_bottom_corner};
+    use sugarglider::sys::app::AppInfo;
 
-    use super::{Command, Corner, Opt, corner_candidates, looks_parked};
+    use super::{
+        Command, Corner, Opt, ax_list_diagnostic, ax_list_no_match, corner_candidates,
+        looks_parked, targeted_ax_list,
+    };
 
     fn rect(x: f64, y: f64, w: f64, h: f64) -> CGRect {
         CGRect::new(CGPoint::new(x, y), CGSize::new(w, h))
+    }
+
+    #[test]
+    fn targeted_ax_list_distinguishes_no_app_error_and_empty_windows() {
+        let opt = Opt::try_parse_from(["devtool", "--bundle", "com.apple.TextEdit", "list", "ax"])
+            .unwrap();
+        assert!(targeted_ax_list(&opt));
+        assert!(!targeted_ax_list(
+            &Opt::try_parse_from(["devtool", "list", "ax"]).unwrap()
+        ));
+        assert!(!targeted_ax_list(
+            &Opt::try_parse_from(["devtool", "--bundle", "com.apple.TextEdit", "list", "all"])
+                .unwrap()
+        ));
+        assert_eq!(
+            ax_list_no_match("com.apple.TextEdit"),
+            "AX list: no running app matches bundle filter \"com.apple.TextEdit\""
+        );
+
+        let info = AppInfo {
+            bundle_id: Some("com.apple.TextEdit".to_owned()),
+            localized_name: Some("TextEdit".to_owned()),
+        };
+        assert_eq!(
+            ax_list_diagnostic(33920, &info, Err(&accessibility::Error::NotFound)),
+            Some(
+                "AX list: pid=33920 bundle=com.apple.TextEdit: error reading windows: NotFound"
+                    .to_owned()
+            )
+        );
+        assert_eq!(
+            ax_list_diagnostic(33920, &info, Ok(0)),
+            Some("AX list: pid=33920 bundle=com.apple.TextEdit: 0 windows".to_owned())
+        );
+        assert_eq!(ax_list_diagnostic(33920, &info, Ok(1)), None);
     }
 
     #[test]
