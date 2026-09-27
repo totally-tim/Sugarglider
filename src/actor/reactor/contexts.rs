@@ -20,6 +20,7 @@ use crate::model::contexts::{
     ContextError, ContextId, ContextKey, Contexts, MatchPass, Scope, Slot, SwitchInput, SwitchMove,
     SwitchPlan, SwitchScreen, SwitchWindow, WindowDesc, plan_switch, resolve,
 };
+use crate::sys::geometry::CGRectExt;
 use crate::sys::screen::{ScreenId, SpaceId};
 
 /// Why a context command does nothing while a quit waits for parked windows.
@@ -193,6 +194,53 @@ impl Reactor {
             return None;
         };
         spaces.iter().position(|shown| shown.screen == screen)
+    }
+
+    /// An active context cannot claim that every nonmember is parked while AX
+    /// omits one that WindowServer lists. A passive reapply falls back to
+    /// Everything when the sources disagree, including a stale Cmd+W row.
+    fn check_on_screen_nonmembers(
+        &self,
+        spaces: &[ShownSpace],
+        only: Option<usize>,
+    ) -> io::Result<()> {
+        for wsid in &self.on_screen_windows {
+            let Some(info) = self.window_server_info.get(wsid) else {
+                continue;
+            };
+            if info.layer != 0 || info.pid == std::process::id() as pid_t {
+                continue;
+            }
+            for (slot, shown) in spaces.iter().enumerate() {
+                if only.is_some_and(|only| only != slot)
+                    || shown.key == ContextKey::Everything
+                    || self.screens[shown.screen].bounds.intersection(&info.frame).area() <= 0.0
+                {
+                    continue;
+                }
+                match self.window_ids.get(wsid).copied() {
+                    // An explicit destroy is stronger evidence than a stale
+                    // WindowServer snapshot.
+                    Some(wid) if wid.pid == info.pid && !self.windows.contains_key(&wid) => {}
+                    Some(wid)
+                        if wid.pid == info.pid
+                            && self.windows[&wid].window_server_id == Some(*wsid)
+                            && (self.parked.contains_key(&wid)
+                                || !self.hidden_windows.contains(wsid)
+                                || self.shows_under(shown.key, wid)
+                                || self
+                                    .layout_window_info(wid)
+                                    .is_some_and(|info| self.layout.is_untracked(&info))) => {}
+                    _ => {
+                        return Err(io::Error::other(format!(
+                            "WindowServer still lists window {wsid:?} from app {}, but AX has not confirmed it",
+                            info.pid
+                        )));
+                    }
+                }
+            }
+        }
+        Ok(())
     }
 
     /// The context and its open members, as the layout needs it.
@@ -371,7 +419,10 @@ impl Reactor {
         let spaces = self.shown_spaces(apply);
         let only = Self::only_position(apply, &spaces);
         let plan = plan_switch(&self.switch_input(&spaces, only));
-        let parking = match self.journal_parking(&plan.park) {
+        let parking = match self
+            .check_on_screen_nonmembers(&spaces, only)
+            .and_then(|()| self.journal_parking(&plan.park))
+        {
             Ok(parking) => parking,
             Err(err) if matches!(apply, Apply::Switch { .. }) => {
                 return Err(ApplyError::BeforeSwitch(err));
@@ -2828,6 +2879,167 @@ mod tests {
         assert_eq!(arranged, s.frames(&[wid(1), wid(2)]));
         assert_eq!(vec![wid(3)], s.parked());
         assert_eq!(corner(CGSize::new(400., 1000.)), s.frame(wid(3)));
+    }
+
+    #[test]
+    fn a_partial_ax_list_cannot_hide_a_visible_nonmember_during_a_switch() {
+        let mut s = Setup::new(2);
+        let c = s.create("C", &[wid(1)]);
+        s.reactor.handle_event(Event::WindowsOnScreenUpdated {
+            pid: None,
+            on_screen: on_screen(&s, &[wid(1), wid(2)]),
+        });
+        s.reactor.handle_event(Event::WindowsDiscovered {
+            pid: 1,
+            new: vec![],
+            known_visible: vec![wid(1)],
+        });
+        assert!(!s.reactor.visible_windows.contains(&WindowServerId::new(2)));
+
+        let error = s.reactor.switch_context_on(None, c, None).unwrap_err();
+        assert!(error.contains("AX has not confirmed"), "{error}");
+        assert_eq!(ContextKey::Everything, s.reactor.contexts.active());
+        assert!(s.parked().is_empty());
+        assert!(s.journal_on_disk().is_empty());
+
+        s.reactor.handle_event(Event::WindowsDiscovered {
+            pid: 1,
+            new: vec![],
+            known_visible: vec![wid(1), wid(2)],
+        });
+        assert!(s.reactor.visible_windows.contains(&WindowServerId::new(2)));
+        s.switch(c);
+        assert_eq!(c, s.reactor.contexts.active());
+        assert_eq!(vec![wid(2)], s.parked());
+    }
+
+    #[test]
+    fn an_initially_missing_ax_window_cannot_be_skipped_by_a_switch() {
+        let mut s = Setup::on(vec![screen()], vec![Some(space())]);
+        s.reactor.handle_events(s.apps.make_app(1, vec![]));
+        s.reactor.handle_event(Event::StartupComplete);
+        s.reactor.handle_event(Event::WindowsOnScreenUpdated {
+            pid: None,
+            on_screen: WindowsOnScreen::new(vec![WindowServerInfo {
+                id: WindowServerId::new(90),
+                pid: 1,
+                layer: 0,
+                frame: rect(100., 100., 500., 500.),
+            }]),
+        });
+        let c = ContextKey::Named(s.reactor.contexts.create("C").unwrap());
+
+        let error = s.reactor.switch_context_on(None, c, None).unwrap_err();
+        assert!(error.contains("AX has not confirmed"), "{error}");
+        assert_eq!(ContextKey::Everything, s.reactor.contexts.active());
+        assert!(s.journal_on_disk().is_empty());
+
+        // On another Space neither source lists this window, so it cannot
+        // prevent a switch there.
+        s.reactor.handle_event(Event::WindowsOnScreenUpdated {
+            pid: None,
+            on_screen: WindowsOnScreen::default(),
+        });
+        s.switch(c);
+        assert_eq!(c, s.reactor.contexts.active());
+    }
+
+    #[test]
+    fn a_window_server_row_before_app_registration_blocks_a_named_switch() {
+        let mut s = Setup::on(vec![screen()], vec![Some(space())]);
+        s.reactor.handle_event(Event::StartupComplete);
+        s.reactor.handle_event(Event::WindowsOnScreenUpdated {
+            pid: None,
+            on_screen: WindowsOnScreen::new(vec![WindowServerInfo {
+                id: WindowServerId::new(90),
+                pid: 2,
+                layer: 0,
+                frame: rect(100., 100., 500., 500.),
+            }]),
+        });
+        let c = ContextKey::Named(s.reactor.contexts.create("C").unwrap());
+        let error = s.reactor.switch_context_on(None, c, None).unwrap_err();
+        assert!(error.contains("app 2"), "{error}");
+        assert_eq!(ContextKey::Everything, s.reactor.contexts.active());
+        assert!(s.journal_on_disk().is_empty());
+    }
+
+    #[test]
+    fn startup_reapply_falls_back_when_ax_omits_a_visible_nonmember() {
+        let mut s = Setup::on(vec![screen()], vec![Some(space())]);
+        s.reactor.handle_events(s.apps.make_app(1, make_windows(2)));
+        let c = s.create("C", &[wid(1)]);
+        s.reactor.contexts.switch_to(c).unwrap();
+        s.reactor.handle_event(Event::WindowsOnScreenUpdated {
+            pid: None,
+            on_screen: on_screen(&s, &[wid(1), wid(2)]),
+        });
+        s.reactor.handle_event(Event::WindowsDiscovered {
+            pid: 1,
+            new: vec![],
+            known_visible: vec![wid(1)],
+        });
+        assert!(!s.reactor.visible_windows.contains(&WindowServerId::new(2)));
+        assert!(s.parked().is_empty());
+
+        s.reactor.handle_event(Event::StartupComplete);
+        assert_eq!(ContextKey::Everything, s.reactor.contexts.active());
+        assert!(s.parked().is_empty());
+        assert!(s.journal_on_disk().is_empty());
+    }
+
+    #[test]
+    fn an_ax_list_on_another_space_does_not_hide_a_known_window() {
+        let mut s = Setup::new(2);
+        let c = s.create("C", &[wid(2)]);
+        s.reactor.contexts.switch_to(c).unwrap();
+        s.reactor.handle_event(Event::WindowsOnScreenUpdated {
+            pid: None,
+            on_screen: on_screen(&s, &[wid(2)]),
+        });
+        s.reactor.handle_event(Event::WindowsDiscovered {
+            pid: 1,
+            new: vec![],
+            known_visible: vec![wid(2)],
+        });
+        assert!(!s.reactor.hidden_windows.contains(&WindowServerId::new(1)));
+
+        s.reactor.handle_event(Event::SpaceChanged(
+            vec![Some(space())],
+            on_screen(&s, &[wid(1)]),
+        ));
+        assert_eq!(c, s.reactor.contexts.active());
+        assert_eq!(vec![wid(1)], s.parked());
+    }
+
+    #[test]
+    fn a_closed_window_leaves_the_layout_and_no_longer_blocks_a_switch() {
+        let mut s = Setup::new(2);
+        let c = s.create("C", &[wid(1), wid(2)]);
+        s.switch(c);
+        s.reactor.handle_event(Event::WindowsOnScreenUpdated {
+            pid: None,
+            on_screen: on_screen(&s, &[wid(1), wid(2)]),
+        });
+        s.apps.windows.remove(&wid(2));
+        s.reactor.handle_event(Event::WindowsDiscovered {
+            pid: 1,
+            new: vec![],
+            known_visible: vec![wid(1)],
+        });
+        assert_eq!(vec![(wid(1), screen())], s.tiles());
+        assert!(!s.reactor.lists_unsorted());
+
+        s.reactor.apply_again();
+        assert_eq!(c, s.reactor.contexts.active());
+
+        s.reactor.handle_event(Event::WindowsOnScreenUpdated {
+            pid: None,
+            on_screen: on_screen(&s, &[wid(1)]),
+        });
+        s.switch(c);
+        assert_eq!(c, s.reactor.contexts.active());
+        assert!(s.parked().is_empty());
     }
 
     fn id_of(key: ContextKey) -> ContextId {

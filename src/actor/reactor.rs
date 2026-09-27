@@ -452,6 +452,8 @@ pub struct Reactor {
     windows: HashMap<WindowId, WindowState>,
     window_server_info: HashMap<WindowServerId, WindowServerInfo>,
     window_ids: HashMap<WindowServerId, WindowId>,
+    /// The latest WindowServer snapshot before AX's closed-window filter.
+    on_screen_windows: HashSet<WindowServerId>,
     visible_windows: HashSet<WindowServerId>,
     screens: Vec<Screen>,
     active_screen_idx: Option<u16>,
@@ -761,6 +763,7 @@ impl Reactor {
             windows: HashMap::default(),
             window_ids: HashMap::default(),
             window_server_info: HashMap::default(),
+            on_screen_windows: HashSet::default(),
             visible_windows: HashSet::default(),
             screens: vec![],
             active_screen_idx: None,
@@ -1846,6 +1849,7 @@ impl Reactor {
         // The on_screen snapshot always contains the complete list of visible
         // windows, even for partial (per-app) updates. Replace rather than
         // extend to avoid accumulating stale entries.
+        self.on_screen_windows = on_screen.visible.iter().copied().collect();
         self.visible_windows.clear();
         // Filter out windows that accessibility has reported as hidden (closed
         // with Cmd+W). The window server might still show them as visible, but
@@ -1922,22 +1926,22 @@ impl Reactor {
             .extend(new.iter().flat_map(|(wid, info)| info.sys_id.map(|wsid| (wsid, *wid))));
         self.windows.extend(new.into_iter().map(|(wid, info)| (wid, info.into())));
 
-        // If accessibility reports at least one window, use it to detect closed
-        // windows. Mark them as hidden so they stay out of the layout even if
-        // the window server reports them as visible later (e.g., on space change).
+        // A nonempty AX list can identify closed windows only among windows
+        // currently listed by WindowServer. AX can omit a window on another
+        // Space, and that omission must not hide it when its Space returns.
         if !known_visible.is_empty() {
             let known_set: HashSet<WindowId> = known_visible.into_iter().collect();
-            // Find window server IDs for this app's windows that are no longer
-            // in the accessibility list - these are "hidden" (closed with Cmd+W).
             for (wsid, wid) in self.window_ids.iter() {
                 if wid.pid == pid {
                     if known_set.contains(wid) {
-                        // Window is visible in accessibility - remove from hidden set
-                        // in case it was previously hidden and has now reappeared.
                         self.hidden_windows.remove(wsid);
-                    } else {
-                        // Window is not visible in accessibility - mark as hidden.
+                        if self.on_screen_windows.contains(wsid) {
+                            self.visible_windows.insert(*wsid);
+                        }
+                    } else if self.on_screen_windows.contains(wsid) {
                         self.hidden_windows.insert(*wsid);
+                    } else {
+                        self.hidden_windows.remove(wsid);
                     }
                 }
             }

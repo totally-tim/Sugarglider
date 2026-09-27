@@ -460,20 +460,25 @@ impl State {
         let _span = info_span!("init", ?info).entered();
 
         // Now that we will observe new window events, read the list of windows.
-        let Ok(initial_window_elements) = self.app.windows() else {
-            // This is probably not a normal application, or it has exited.
-            return false;
-        };
-
-        // Process the list and register notifications on all windows.
-        self.windows.reserve(initial_window_elements.len() as usize);
-        let mut windows = Vec::with_capacity(initial_window_elements.len() as usize);
-        for elem in initial_window_elements.iter() {
-            let elem = elem.clone();
-            let Some((info, wid)) = self.register_window(elem) else {
-                continue;
-            };
-            windows.push((wid, info));
+        let mut windows = Vec::new();
+        match self.app.windows() {
+            Ok(initial_window_elements) => {
+                // Process the list and register notifications on all windows.
+                self.windows.reserve(initial_window_elements.len() as usize);
+                windows.reserve(initial_window_elements.len() as usize);
+                for elem in initial_window_elements.iter() {
+                    let elem = elem.clone();
+                    let Some((info, wid)) = self.register_window(elem) else {
+                        continue;
+                    };
+                    windows.push((wid, info));
+                }
+            }
+            Err(err) => {
+                // Keep the app registered so the next visibility poll can
+                // discover windows after a transient AX failure.
+                warn!(?self.pid, ?err, "Could not list initial windows");
+            }
         }
         self.main_window = self.app.main_window().ok().and_then(|w| self.id(&w).ok());
         self.is_frontmost = self.app.frontmost().map(|b| b.value()).unwrap_or(false);
