@@ -1,12 +1,14 @@
 # Contexts
 
-Status: M2 through M10 are integrated in this working branch behind `settings.experimental.contexts.enable`, which defaults to false. PR #25 remains draft pending physical QA. Written 2026-09-25, revised 2026-09-27.
+Status: M2 through M10 are integrated in this working branch behind `settings.experimental.contexts.enable`, which defaults to false. PR #25 remains draft pending physical QA. Written 2026-09-25, revised 2026-09-29.
 
 Code references name symbols first; line numbers are hints and will drift.
 
 Implemented in this integration: the model, switching and membership, parking and the journal, `contexts.json`, IPC, the full command line and Raycast script, menu bar, switcher, per-screen scope, Preferences scope picker, and the user guide.
 
 The M1 physical spike has partial one-display TextEdit and Calculator evidence for Q1. Q1 for other apps and two displays, Q2 to Q4, Q5's target, and manual QA still need a person.
+
+The [September 29 QA attempt](contexts-qa-2026-09-29.md) verified a human-launched server and CLI access on one dedicated Space. Native automation stalled before any context or parking test. It does not close Q1 to Q5 or the manual checklist.
 
 ## Start here
 
