@@ -229,6 +229,7 @@ struct State {
     /// Whether title changes become reactor events. The reactor keeps this
     /// off while contexts are off.
     track_titles: bool,
+    native_tabs: crate::model::native_tabs::TabTracker<CFRetained<AXUIElement>>,
 }
 
 struct WindowState {
@@ -363,6 +364,7 @@ impl State {
             return Ok(());
         };
         let _guard = span.enter();
+        self.check_frame_target(wid)?;
         // Enhanced UI is already disabled for the animation, so there is no toggle
         // here, and we write once without retries to keep each frame cheap. The
         // deferred fixup in EndWindowAnimation corrects the final frame.
@@ -606,6 +608,7 @@ impl State {
                 for elem in window_elems.iter() {
                     let elem = elem.clone();
                     if let Ok(id) = self.id(&elem) {
+                        self.observe_native_tabs(id, &elem);
                         known_visible.push(id);
                         continue;
                     }
@@ -636,6 +639,7 @@ impl State {
                 );
             }
             &mut Request::SetWindowFrame(wid, frame, txid) => {
+                self.check_frame_target(wid)?;
                 let app_elem = &self.app.clone();
                 let window = self.window_mut(wid)?;
                 window.last_seen_txid = txid;
@@ -676,6 +680,7 @@ impl State {
                 if let Err(e) = self.flush_frames(wid) {
                     warn!(?wid, "Failed to flush animation frame on end: {e}");
                 }
+                let can_write = self.check_frame_target(wid).is_ok();
                 let remaining_animations = if self.active_window_animations == 0 {
                     warn!(?wid, "Got EndWindowAnimation without a matching begin");
                     0
@@ -697,7 +702,7 @@ impl State {
                 let last_seen_txid = window.last_seen_txid;
                 // Apply the deferred full-frame fixup while enhanced UI is still
                 // disabled and before restarting notifications.
-                if let Some(frame) = last_animation_frame {
+                if can_write && let Some(frame) = last_animation_frame {
                     if let Err(e) = set_window_frame_with_retries(&elem, frame) {
                         warn!("Failed to apply frame fixup after animation: {e}");
                     }
@@ -709,6 +714,9 @@ impl State {
                     self.restore_enhanced_ui_on_last_end = false;
                 }
                 self.restart_notifications_after_animation(&elem);
+                if !can_write {
+                    return Ok(false);
+                }
                 let frame = trace("frame", &elem, || elem.frame())?;
                 self.send_event(Event::WindowFrameChanged(
                     wid,
@@ -844,6 +852,7 @@ impl State {
     }
 
     fn on_window_destroyed(&mut self, wid: WindowId) {
+        self.native_tabs.forget_window(wid);
         if self.windows.remove(&wid).is_some() {
             self.send_event(Event::WindowDestroyed(wid));
         }
@@ -1084,6 +1093,10 @@ impl State {
         };
         // Suppress redundant events. This is so we don't repeat an event that
         // was manufactured as a quiet event before.
+        if let Some(window) = self.windows.get(&wid) {
+            let elem = window.elem.clone();
+            self.observe_native_tabs(wid, &elem);
+        }
         if self.main_window == Some(wid) {
             return Some(wid);
         }
@@ -1214,6 +1227,7 @@ impl State {
             self.last_window_idx += 1;
             WindowId::with_manual_index(self.pid, self.last_window_idx)
         });
+        self.observe_native_tabs(wid, &elem);
         let old = self.windows.insert(
             wid,
             WindowState {
@@ -1250,6 +1264,63 @@ impl State {
             }
             true
         }
+    }
+
+    fn observe_native_tabs(&mut self, window: WindowId, element: &AXUIElement) {
+        let known = self.native_tabs.bar_for_window(window).map(|bar| &**bar);
+        let group = match crate::sys::native_tabs::read(element, known) {
+            Ok(Some(bar)) => {
+                match self.native_tabs.observe(window, bar.element, bar.tabs, bar.selected) {
+                    Some(group) => Some(group),
+                    None => {
+                        self.send_event(Event::NativeTabsUnavailable(window));
+                        return;
+                    }
+                }
+            }
+            Ok(None) => {
+                // Inactive native windows can expose no tab-bar children.
+                // A fresh application list must still expose this window
+                // before absence of a bar can detach it from a known group.
+                if self.native_tabs.bar_for_window(window).is_some()
+                    && !self
+                        .app
+                        .windows()
+                        .is_ok_and(|windows| windows.iter().any(|visible| &*visible == element))
+                {
+                    self.send_event(Event::NativeTabsUnavailable(window));
+                    return;
+                }
+                self.native_tabs.forget_window(window);
+                None
+            }
+            Err(err) => {
+                debug!(?window, ?err, "Native tab identity read unavailable");
+                self.send_event(Event::NativeTabsUnavailable(window));
+                return;
+            }
+        };
+        self.send_event(Event::NativeTabsChanged { window, group });
+    }
+
+    fn check_frame_target(&self, wid: WindowId) -> Result<(), accessibility::Error> {
+        let bar = self.native_tabs.bar_for_window(wid);
+        if !self.track_titles && bar.is_none() {
+            return Ok(());
+        }
+        let result = (|| {
+            let window = self.window(wid)?;
+            if !self.app.windows()?.iter().any(|visible| visible == window.elem)
+                || bar.is_some_and(|bar| !bar.window().is_ok_and(|owner| owner == window.elem))
+            {
+                return Err(accessibility::Error::NotFound);
+            }
+            Ok(())
+        })();
+        if result.is_err() {
+            self.send_event(Event::FrameTargetUnavailable(wid));
+        }
+        result
     }
 
     fn send_event(&self, event: Event) {
@@ -1362,6 +1433,7 @@ fn app_thread_main(
         restore_enhanced_ui_on_last_end: false,
         pending_frames: HashMap::default(),
         track_titles: false,
+        native_tabs: Default::default(),
     };
 
     Executor::run(state.run(

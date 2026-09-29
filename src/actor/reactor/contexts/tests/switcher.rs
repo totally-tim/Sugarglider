@@ -146,6 +146,8 @@ fn the_switchers_create_makes_a_context_from_the_windows_it_carries() {
         frame: s.frame(wid(1)),
         ..make_window(3)
     };
+    super::native_tabs::observe(&mut s, 1, wid(1), &[Some(wid(1))]);
+    super::native_tabs::observe(&mut s, 1, wid(3), &[Some(wid(1)), Some(wid(3))]);
     open_window(&mut s, wid(3), tab, &[wid(1), wid(2)]);
     assert!(s.reactor.contexts.is_member(c, wid(3)));
     s.reactor.contexts.pin(&s.desc(wid(2)));
@@ -162,7 +164,7 @@ fn the_switchers_create_makes_a_context_from_the_windows_it_carries() {
     let e = ContextKey::Named(s.reactor.contexts.by_name("E").unwrap().id);
     assert_eq!(ContextKey::Named(id_of(e)), s.reactor.contexts.active());
     // Window 3's tab group is window 1 and window 3; window 2 is pinned.
-    let members: Vec<WindowId> = s
+    let mut members: Vec<WindowId> = s
         .reactor
         .contexts
         .get(id_of(e))
@@ -171,8 +173,11 @@ fn the_switchers_create_makes_a_context_from_the_windows_it_carries() {
         .iter()
         .filter_map(|record| record.window())
         .collect();
+    members.sort();
     assert_eq!(vec![wid(1), wid(3)], members);
-    assert_eq!(vec!["Window1", "Window3"], saved_members(&s, e));
+    let mut saved = saved_members(&s, e);
+    saved.sort();
+    assert_eq!(vec!["Window1", "Window3"], saved);
 }
 
 /// M8, R37, R23. The switcher's edit removes a gone record, removes a window

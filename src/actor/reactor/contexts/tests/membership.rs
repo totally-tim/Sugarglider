@@ -660,7 +660,7 @@ fn r39_an_app_that_keeps_moving_its_parked_window_back_is_parked_five_times() {
     answer(&mut s, requests);
 }
 
-/// R36. A new native tab shares the frame of its group. It joins the
+/// R36. An explicitly identified native tab joins the
 /// contexts of the group's main tab, here C and D, and not only the active
 /// context, and it is pinned when the main tab is. It takes no tile of its
 /// own.
@@ -684,6 +684,8 @@ fn r36_a_new_tab_joins_the_contexts_of_its_groups_main_tab() {
             frame: s.frame(wid(1)),
             ..make_window(3)
         };
+        super::native_tabs::observe(&mut s, 1, wid(1), &[Some(wid(1))]);
+        super::native_tabs::observe(&mut s, 1, wid(3), &[Some(wid(1)), Some(wid(3))]);
         open_window(&mut s, wid(3), tab, &[wid(1), wid(2)]);
 
         assert_eq!(
@@ -692,7 +694,12 @@ fn r36_a_new_tab_joins_the_contexts_of_its_groups_main_tab() {
             "pinned: {pinned}"
         );
         assert_eq!(pinned, s.reactor.contexts.is_pinned(wid(3)));
-        assert_eq!(tiles, s.tiles());
+        let mut expected = tiles
+            .into_iter()
+            .map(|(w, frame)| (if w == wid(1) { wid(3) } else { w }, frame))
+            .collect::<Vec<_>>();
+        expected.sort_by_key(|(wid, _)| *wid);
+        assert_eq!(expected, s.tiles());
         assert!(s.parked().is_empty());
         s.switch(d);
         assert_eq!(vec![wid(2)], s.parked());
@@ -866,6 +873,8 @@ fn r36_a_command_acts_on_every_tab_of_the_group() {
         frame: s.frame(wid(2)),
         ..make_window(3)
     };
+    super::native_tabs::observe(&mut s, 1, wid(2), &[Some(wid(2))]);
+    super::native_tabs::observe(&mut s, 1, wid(3), &[Some(wid(2)), Some(wid(3))]);
     open_window(&mut s, wid(3), tab, &[wid(1), wid(2)]);
     assert!(s.reactor.contexts.is_member(c, wid(3)));
 
@@ -878,7 +887,7 @@ fn r36_a_command_acts_on_every_tab_of_the_group() {
     for tab in [wid(2), wid(3)] {
         assert_eq!(vec![id_of(d)], s.reactor.contexts.contexts_of(tab), "{tab:?}");
     }
-    assert_eq!(vec![wid(2), wid(3)], s.parked());
+    assert_eq!(vec![wid(3)], s.parked());
     assert_eq!(vec![(wid(1), screen())], s.tiles());
 }
 
@@ -931,7 +940,7 @@ fn r37_membership_commands_that_cant_apply_change_nothing() {
 /// R36. Tabs 2 and 3 of a group hold different records, for example
 /// because window 3 was dragged into the group. The group's main tab,
 /// window 2, decides for both: switching to its context parks neither, and
-/// switching to a context without it parks both.
+/// switching to a context without it parks only the selected window.
 #[test]
 fn r36_a_group_shows_and_hides_with_its_main_tab() {
     let mut s = Setup::on(vec![screen()], vec![Some(space())]);
@@ -943,6 +952,7 @@ fn r36_a_group_shows_and_hides_with_its_main_tab() {
         .handle_events(s.apps.make_app_with_opts(1, windows, Some(wid(2)), false));
     s.reactor.handle_event(Event::StartupComplete);
     s.apps.simulate_until_quiet(&mut s.reactor);
+    super::native_tabs::observe(&mut s, 1, wid(2), &[Some(wid(2)), Some(wid(3))]);
     assert_eq!(vec![wid(2), wid(3)], s.reactor.tabs_of(wid(2)));
     let c = s.create("C", &[wid(1), wid(2)]);
     let d = s.create("D", &[wid(3)]);
@@ -950,12 +960,12 @@ fn r36_a_group_shows_and_hides_with_its_main_tab() {
 
     s.switch(c);
     assert!(s.parked().is_empty());
-    assert_eq!(right, s.frame(wid(3)));
+    assert!(!s.tiles().iter().any(|(w, _)| *w == wid(3)));
 
     s.switch(d);
-    assert_eq!(vec![wid(1), wid(2), wid(3)], s.parked());
+    assert_eq!(vec![wid(1), wid(2)], s.parked());
     s.switch(e);
-    assert_eq!(vec![wid(2), wid(3)], s.parked());
+    assert_eq!(vec![wid(2)], s.parked());
 }
 
 /// R38, R10. When startup completes while the window server's list names

@@ -324,6 +324,36 @@ impl LayoutTree {
         }
     }
 
+    /// Transfers a native tab group's existing leaves to its selected window.
+    /// Each layout keeps the old leaf's position, weight, and selection.
+    pub fn replace_window(&mut self, old: WindowId, selected: WindowId) {
+        if old == selected {
+            return;
+        }
+        let layouts: Vec<_> = self
+            .layout_roots
+            .keys()
+            .filter(|&layout| {
+                self.window_node(layout, old).is_some() || self.window_is_stashed(layout, old)
+            })
+            .collect();
+        for layout in layouts {
+            self.remove_window_from(layout, selected);
+            if let Some(stashed) = self.stashed.remove(&(layout, old)) {
+                self.stashed.insert((layout, selected), stashed);
+            }
+        }
+        let nodes: Vec<_> = self.tree.data.window.nodes_for(old).collect();
+        for node in nodes {
+            self.tree.data.window.replace_at(node, selected);
+        }
+        if let Some(share) = self.size_lock(old) {
+            self.set_size_lock(selected, share);
+        } else {
+            self.clear_size_lock(selected);
+        }
+    }
+
     pub fn remove_window(&mut self, wid: WindowId) {
         self.drop_stashes(|_, other| other == wid);
         for node in self.tree.data.window.take_nodes_for(wid) {
@@ -1462,6 +1492,66 @@ mod tests {
 
     fn w(pid: pid_t, idx: u32) -> WindowId {
         WindowId::new(pid, idx)
+    }
+
+    #[test]
+    fn native_tab_selection_preserves_positions_and_weights_in_saved_layouts() {
+        let mut tree = LayoutTree::new();
+        let first = tree.create_layout();
+        let node = tree.add_window_under(first, tree.root(first), w(1, 1));
+        tree.add_window_under(first, tree.root(first), w(2, 1));
+        tree.resize(node, 0.2, Direction::Right);
+        tree.select(node);
+        let second = tree.clone_layout(first);
+        let second_node = tree.window_node(second, w(1, 1)).unwrap();
+        tree.resize(second_node, -0.1, Direction::Right);
+        let screen = CGRect::new(CGPoint::new(0., 0.), CGSize::new(1200., 800.));
+        let config = Config::default();
+        let expected: Vec<_> = [first, second]
+            .into_iter()
+            .map(|layout| {
+                tree.calculate_layout(layout, screen, &config)
+                    .into_iter()
+                    .map(|(wid, frame)| (if wid == w(1, 1) { w(1, 2) } else { wid }, frame))
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        tree.replace_window(w(1, 1), w(1, 2));
+        for (i, layout) in [first, second].into_iter().enumerate() {
+            assert_frames_are(
+                tree.calculate_layout(layout, screen, &config),
+                expected[i].clone(),
+            );
+            assert_eq!(Some(w(1, 2)), tree.window_at(tree.selection(layout)));
+        }
+    }
+
+    #[test]
+    fn native_tab_selection_keeps_a_stashed_position_on_another_screen() {
+        let mut tree = LayoutTree::new();
+        let layout = tree.create_layout();
+        let root = tree.root(layout);
+        tree.add_window_under(layout, root, w(2, 1));
+        let node = tree.add_window_under(layout, root, w(1, 1));
+        tree.add_window_under(layout, root, w(2, 2));
+        tree.resize(node, 0.2, Direction::Right);
+        tree.set_size_lock(w(1, 1), 0.4);
+        let screen = CGRect::new(CGPoint::ZERO, CGSize::new(1200., 800.));
+        let config = Config::default();
+        let expected: Vec<_> = tree
+            .calculate_layout(layout, screen, &config)
+            .into_iter()
+            .map(|(wid, frame)| (if wid == w(1, 1) { w(1, 2) } else { wid }, frame))
+            .collect();
+        assert!(tree.stash_window(layout, w(1, 1)));
+        tree.add_window_under(layout, root, w(1, 2));
+        tree.replace_window(w(1, 1), w(1, 2));
+        assert!(!tree.window_is_stashed(layout, w(1, 1)));
+        assert!(tree.window_is_stashed(layout, w(1, 2)));
+        assert!(tree.window_node(layout, w(1, 2)).is_none());
+        tree.unstash_window(layout, w(1, 2)).unwrap();
+        assert_frames_are(tree.calculate_layout(layout, screen, &config), expected);
+        assert_eq!(tree.nodes_for_window(w(1, 2)).len(), 1);
     }
 
     #[test]

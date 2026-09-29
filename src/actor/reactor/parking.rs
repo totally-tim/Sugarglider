@@ -179,9 +179,13 @@ impl Reactor {
             let (corner, screen, side) = self.parking_target(frame).ok_or_else(|| {
                 io::Error::other(format!("No clear bottom parking corner for {wid:?}"))
             })?;
-            entries.push(self.journal_entry(wid, frame).ok_or_else(|| {
-                io::Error::other(format!("Cannot journal visible window {wid:?}"))
-            })?);
+            // Only the selected tab moves, but any identified tab can become
+            // the window AX exposes after a selection, close, or restart.
+            for member in self.tabs_of(wid) {
+                entries.push(self.journal_entry(member, frame).ok_or_else(|| {
+                    io::Error::other(format!("Cannot journal native tab {member:?}"))
+                })?);
+            }
             parking.push(Parking {
                 wid,
                 frame,
@@ -207,6 +211,77 @@ impl Reactor {
             title: window.title.expose_secret().clone(),
             frame: frame.into(),
         })
+    }
+
+    /// Restores a group through its selected window when selection or merging
+    /// changes the identity that owns a parked frame.
+    pub(super) fn restore_selected_native_tab(
+        &mut self,
+        previous: WindowId,
+        selected: WindowId,
+        members: &[WindowId],
+    ) {
+        let inactive: Vec<_> = members
+            .iter()
+            .copied()
+            .chain(std::iter::once(previous))
+            .filter(|wid| *wid != selected && self.parked.contains_key(wid))
+            .collect();
+        let journal_frame = self
+            .windows
+            .get(&selected)
+            .and_then(|window| window.window_server_id)
+            .and_then(|wsid| self.journal.get(selected.pid, wsid))
+            .map(|entry| CGRect::from(entry.frame));
+        if inactive.is_empty() && (previous == selected || journal_frame.is_none()) {
+            return;
+        }
+        let before = self
+            .parked
+            .get(&previous)
+            .or_else(|| self.parked.get(&selected))
+            .map(|parked| parked.before)
+            .or(journal_frame)
+            .or_else(|| {
+                self.windows
+                    .get(&previous)
+                    .map(|window| window.frame_monotonic)
+                    .filter(|frame| !self.looks_like_parked_strip(*frame))
+            })
+            .or_else(|| {
+                inactive
+                    .first()
+                    .and_then(|wid| self.parked.get(wid))
+                    .map(|parked| parked.before)
+            });
+        let Some(before) = before else { return };
+        if let Some(entry) = self.journal_entry(selected, before) {
+            if let Err(err) = self.journal.record(vec![entry]) {
+                error!(
+                    ?selected,
+                    ?err,
+                    "Could not record selected native tab; preserving the old journal and restoring Everything"
+                );
+            }
+        }
+        self.fail_parking_results_for(&inactive, "The selected native tab changed during parking");
+        for wid in inactive {
+            self.parked.remove(&wid);
+            self.cancel_parking_echo(wid);
+            self.moving_away.remove(&wid);
+            self.frame_attempts.remove(&wid);
+            self.forced_writes.remove(&wid);
+            self.pending_frame_overrides.remove(&wid);
+        }
+        self.forced_writes.insert(selected);
+        self.abort_failed_parking(
+            "The selected native tab changed before restoration was confirmed".into(),
+        );
+        if !self.windows_in_layout().contains(&selected) {
+            self.forced_writes.insert(selected);
+            self.put_back_unplaced(&[(selected, before)]);
+            self.update_layout(&[], true);
+        }
     }
 
     /// Parks each parked window again when it isn't in the corner that parks
@@ -261,12 +336,14 @@ impl Reactor {
                 return Err(reason);
             }
             if before != parked.before {
-                let Some(entry) = self.journal_entry(wid, before) else {
-                    let reason = format!("Cannot journal moved parked window {wid:?}");
-                    self.abort_failed_parking(reason.clone());
-                    return Err(reason);
-                };
-                entries.push(entry);
+                for member in self.tabs_of(wid) {
+                    let Some(entry) = self.journal_entry(member, before) else {
+                        let reason = format!("Cannot journal moved parked window {member:?}");
+                        self.abort_failed_parking(reason.clone());
+                        return Err(reason);
+                    };
+                    entries.push(entry);
+                }
             }
             moves.push((wid, before, corner, screen, side));
         }
@@ -660,7 +737,7 @@ impl Reactor {
     /// The caller has checked that the echo belongs to the last write, whose
     /// target is the window's `frame_monotonic`.
     pub(super) fn confirm_unparked(&mut self, wid: WindowId, reported: CGRect) {
-        if self.parked.contains_key(&wid) {
+        if self.parked.contains_key(&wid) || self.membership_window(wid) != wid {
             return;
         }
         let Some(window) = self.windows.get(&wid) else { return };
@@ -673,7 +750,12 @@ impl Reactor {
             debug!(?wid, ?reported, ?target, "Window is not back from parking yet");
             return;
         }
-        self.journal.remove_window(wid.pid, wsid);
+        for member in self.tabs_of(wid) {
+            if let Some(wsid) = self.windows.get(&member).and_then(|window| window.window_server_id)
+            {
+                self.journal.remove_window(member.pid, wsid);
+            }
+        }
     }
 
     /// Forgets a destroyed window's parking state and journal entry.
@@ -722,6 +804,9 @@ impl Reactor {
             }) else {
                 continue;
             };
+            if self.membership_window(wid) != wid {
+                continue;
+            }
             self.journal.mark_restored(pid, entry.window_server_id);
             let frame = self.on_a_screen(entry.frame.into(), self.windows[&wid].frame_monotonic);
             writes.push((wid, frame));

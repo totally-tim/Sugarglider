@@ -7,6 +7,7 @@
 pub mod contexts;
 mod layout_mapping;
 mod layout_tree;
+pub mod native_tabs;
 mod parking;
 mod scroll_constraints;
 pub mod scroll_viewport;

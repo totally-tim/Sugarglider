@@ -163,56 +163,39 @@ impl Reactor {
         })
     }
 
-    /// The windows of the app that share the window's frame, the window first.
-    /// Native tabs of one group are separate windows with one frame, and both
-    /// are on screen. Parked windows share a corner without being tabs, and a
-    /// window that isn't on screen is no tab of one that is.
+    /// Known windows in the same explicit native tab group, the target first.
     pub(super) fn tabs_of(&self, wid: WindowId) -> Vec<WindowId> {
-        let Some(window) = self.windows.get(&wid) else {
+        if !self.windows.contains_key(&wid) {
             return vec![];
-        };
-        if self.parked.contains_key(&wid) {
-            return vec![wid];
         }
-        let key = Self::frame_key(&window.frame_monotonic);
-        let mut tabs: Vec<WindowId> = self
-            .windows
-            .iter()
-            .filter(|&(&other, other_window)| {
-                other != wid
-                    && other.pid == wid.pid
-                    && !self.parked.contains_key(&other)
-                    && self.window_on_screen(other)
-                    && Self::frame_key(&other_window.frame_monotonic) == key
-            })
-            .map(|(&other, _)| other)
-            .collect();
-        tabs.sort();
-        tabs.insert(0, wid);
+        let mut tabs = vec![wid];
+        if let Some(group) = self.native_group(wid) {
+            tabs.extend(
+                group
+                    .snapshot
+                    .members
+                    .iter()
+                    .flatten()
+                    .copied()
+                    .filter(|other| *other != wid && self.windows.contains_key(other)),
+            );
+        }
         tabs
     }
 
-    /// The window whose membership decides the window's: the main tab of its
-    /// tab group, or the window itself.
+    /// The selected tab represents the group; geometry cannot establish a group.
     pub(super) fn membership_window(&self, wid: WindowId) -> WindowId {
-        self.main_tab(wid).unwrap_or(wid)
+        self.native_group(wid)
+            .filter(|group| {
+                group.snapshot.members.contains(&Some(group.snapshot.selected))
+                    && self.windows.contains_key(&group.snapshot.selected)
+            })
+            .map_or(wid, |group| group.snapshot.selected)
     }
 
-    /// The main tab of the window's tab group: the app's main window when it is
-    /// one of the group's tabs other than `wid`. Both must be on screen: the
-    /// frame of a minimized window, a window on another Space, or a window
-    /// closed with ⌘W is only its last tile, so another window of the app can
-    /// share it without being one of its tabs.
     fn main_tab(&self, wid: WindowId) -> Option<WindowId> {
-        let main = self.main_window_tracker.app_main_window(wid.pid)?;
-        if main == wid || self.parked.contains_key(&wid) || self.parked.contains_key(&main) {
-            return None;
-        }
-        if !self.window_on_screen(wid) || !self.window_on_screen(main) {
-            return None;
-        }
-        let key = |wid| Some(Self::frame_key(&self.windows.get(&wid)?.frame_monotonic));
-        (key(wid)? == key(main)?).then_some(main)
+        let group = self.native_group(wid)?;
+        (group.owner != wid && self.windows.contains_key(&group.owner)).then_some(group.owner)
     }
 
     /// A new tab joins the contexts of its group's main tab, and is pinned when
@@ -547,6 +530,10 @@ impl Reactor {
     /// in use and while quitting.
     pub(super) fn park_what_must_not_show(&mut self, pid: pid_t) {
         if !self.contexts_in_use() || self.pending_exit.is_some() {
+            return;
+        }
+        if self.unidentified_native_tabs() {
+            self.fall_back_for_unidentified_tabs();
             return;
         }
         let spaces = self.shown_spaces(Apply::Again);

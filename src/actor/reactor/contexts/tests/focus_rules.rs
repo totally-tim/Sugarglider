@@ -341,6 +341,8 @@ fn r36_a_new_tab_that_takes_focus_before_it_is_seen_joins_its_group() {
     focus_quietly(&mut s, wid(1));
     let frames: Vec<CGRect> = s.tiles().into_iter().map(|(_, frame)| frame).collect();
     let mut raises = capture_raises(&mut s);
+    super::native_tabs::observe(&mut s, 1, wid(1), &[Some(wid(1))]);
+    super::native_tabs::observe(&mut s, 1, wid(3), &[Some(wid(1)), Some(wid(3))]);
 
     s.reactor
         .handle_event(Event::ApplicationMainWindowChanged(1, Some(wid(3)), Quiet::No));

@@ -121,7 +121,10 @@ impl MainWindowTracker {
             | Event::ContextCommandRequested(..)
             | Event::ConfigChanged(_)
             | Event::ContextsRead(_)
-            | Event::WindowsOnScreenUpdated { .. } => return None,
+            | Event::WindowsOnScreenUpdated { .. }
+            | Event::NativeTabsChanged { .. }
+            | Event::NativeTabsUnavailable(_)
+            | Event::FrameTargetUnavailable(_) => return None,
         };
         if Some(event_pid) == self.global_frontmost && quiet_edge == Quiet::No {
             if let Some(wid) = self.main_window() {
@@ -134,12 +137,6 @@ impl MainWindowTracker {
     /// The app that the window server last reported frontmost.
     pub fn frontmost_app(&self) -> Option<pid_t> {
         self.global_frontmost
-    }
-
-    /// The main window that the app last reported, whether or not it is
-    /// active.
-    pub fn app_main_window(&self, pid: pid_t) -> Option<WindowId> {
-        self.apps.get(&pid)?.main_window
     }
 
     /// The main window of the active app, if any.

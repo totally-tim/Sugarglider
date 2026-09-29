@@ -465,6 +465,8 @@ fn an_edit_acts_on_a_whole_native_tab_group() {
         frame: s.frame(wid(2)),
         ..make_window(3)
     };
+    super::native_tabs::observe(&mut s, 1, wid(2), &[Some(wid(2))]);
+    super::native_tabs::observe(&mut s, 1, wid(3), &[Some(wid(2)), Some(wid(3))]);
     open_window(&mut s, wid(3), tab, &[wid(1), wid(2)]);
     assert_eq!(vec![wid(2), wid(3)], s.reactor.tabs_of(wid(2)));
     let c = ContextKey::Named(id_of(s.create("C", &[wid(1)])));

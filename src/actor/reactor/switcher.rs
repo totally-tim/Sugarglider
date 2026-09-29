@@ -147,7 +147,7 @@ impl Reactor {
                 id: main,
                 title: window.title.expose_secret().clone(),
                 app: self.app_display_name(main.pid),
-                tab_count: self.tabs_of(main).len().max(1),
+                tab_count: self.native_group(main).map_or(1, |group| group.snapshot.members.len()),
                 pinned: self.contexts.is_pinned(main),
             });
         }

@@ -120,6 +120,11 @@ pub enum LayoutEvent {
     WindowsOnScreenUpdated(SpaceId, pid_t, Vec<(WindowId, LayoutWindowInfo)>),
     WindowAdded(SpaceId, WindowId, LayoutWindowInfo),
     WindowRemoved(WindowId),
+    NativeTabSelected {
+        previous: WindowId,
+        selected: WindowId,
+        members: Vec<WindowId>,
+    },
     WindowSpaceChanged {
         wid: WindowId,
         added: Option<SpaceId>,
@@ -1021,6 +1026,46 @@ impl LayoutManager {
                     WindowClass::Untracked => (),
                 }
             }
+            LayoutEvent::NativeTabSelected { previous, selected, members } => {
+                self.cancel_interactive_state();
+                for &member in &members {
+                    if member != previous && member != selected {
+                        self.tree.remove_window(member);
+                    }
+                }
+                self.tree.replace_window(previous, selected);
+                let floating = self.floating_windows.contains(&previous);
+                if floating {
+                    self.floating_windows.insert(selected);
+                } else {
+                    self.floating_windows.remove(&selected);
+                }
+                if floating {
+                    let spaces: Vec<_> = self
+                        .active_floating_windows
+                        .by_space
+                        .keys()
+                        .copied()
+                        .filter(|&space| {
+                            self.active_floating_windows.in_space(space).any(|wid| wid == previous)
+                        })
+                        .collect();
+                    for space in spaces {
+                        self.remove_window_from_shown_context(selected, Some(space));
+                    }
+                }
+                if let Some(restore) = self.floating_restore_frames.get(&previous) {
+                    let frame = restore.frame;
+                    self.floating_restore_frames.insert(selected, FloatingRestoreFrame { frame });
+                }
+                self.active_floating_windows.select_tab(previous, selected, &members, floating);
+                if self.focused_window == Some(previous) {
+                    self.focused_window = Some(selected);
+                }
+                if self.last_floating_focus == Some(previous) {
+                    self.last_floating_focus = Some(selected);
+                }
+            }
             LayoutEvent::WindowRemoved(wid) => {
                 self.tree.remove_window(wid);
                 self.tree.clear_size_lock(wid);
@@ -1814,6 +1859,24 @@ struct ActiveFloatingWindows {
 }
 
 impl ActiveFloatingWindows {
+    fn select_tab(
+        &mut self,
+        previous: WindowId,
+        selected: WindowId,
+        members: &[WindowId],
+        floating: bool,
+    ) {
+        for by_pid in self.by_space.values_mut() {
+            if let Some(windows) = by_pid.get_mut(&previous.pid) {
+                let was_active = windows.contains(&previous);
+                windows.retain(|wid| *wid != previous && !members.contains(wid));
+                if was_active && floating {
+                    windows.insert(selected);
+                }
+            }
+        }
+    }
+
     fn insert(&mut self, space: SpaceId, wid: WindowId) {
         self.by_space.entry(space).or_default().entry(wid.pid).or_default().insert(wid);
     }
@@ -6161,6 +6224,44 @@ mod tests {
             ],
             mgr.layout_sorted(space, screen),
         );
+    }
+
+    /// L7. A window has one floating frame, whichever context it floats in.
+    #[test]
+    fn native_tab_selection_keeps_the_floating_frame_and_active_window() {
+        use LayoutCommand::*;
+        use LayoutEvent::*;
+        let mut mgr = LayoutManager::new_for_test();
+        let space = SpaceId::new(1);
+        let screen = rect(0, 0, 120, 120);
+        let w = |idx| WindowId::new(1, idx);
+        switch(
+            &mut mgr,
+            space,
+            screen.size,
+            ContextKey::Everything,
+            &[w(1), w(2), w(3)],
+        );
+        _ = mgr.handle_event(WindowFocused(vec![space], w(1)));
+        _ = mgr.handle_command(Some(space), &[space], ToggleWindowFloating);
+        let moved = rect(10, 20, 50, 40);
+        _ = mgr.handle_event(WindowFrameChanged { wid: w(1), frame: moved });
+        _ = mgr.handle_event(NativeTabSelected {
+            previous: w(1),
+            selected: w(2),
+            members: vec![w(1), w(2)],
+        });
+        assert_eq!(
+            mgr.floating_windows_in_space(space),
+            [w(2)].into_iter().collect()
+        );
+        assert_eq!(mgr.floating_restore_frame(w(2)), Some(moved));
+        assert_eq!(mgr.focused_window, Some(w(2)));
+        assert_eq!(mgr.layout_sorted(space, screen), vec![(w(3), screen)]);
+        _ = mgr.handle_command(Some(space), &[space], ToggleWindowFloating);
+        let response = mgr.handle_command(Some(space), &[space], ToggleWindowFloating);
+        assert_eq!(response.frame_overrides, vec![(w(2), moved)]);
+        assert_eq!(mgr.layout_sorted(space, screen), vec![(w(3), screen)]);
     }
 
     /// L7. A window has one floating frame, whichever context it floats in.

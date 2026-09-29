@@ -14,6 +14,7 @@ mod create_context;
 mod focus;
 mod main_window;
 mod membership;
+mod native_tabs;
 mod parking;
 mod quit;
 mod replay;
@@ -174,6 +175,15 @@ pub enum Event {
     // TODO: Consider replacing with WindowsOnScreenUpdated.
     WindowBecameVisible(WindowId),
     WindowDestroyed(WindowId),
+    /// Explicit native tab identities, sent before the selected window's
+    /// creation or focus event. Group IDs are local to this app actor.
+    NativeTabsChanged {
+        window: WindowId,
+        group: Option<crate::model::native_tabs::TabGroup>,
+    },
+    NativeTabsUnavailable(WindowId),
+    /// AX could not verify that this window still owns a pending frame write.
+    FrameTargetUnavailable(WindowId),
     /// The window's title changed. The title is recorded in the clear.
     WindowTitleChanged(
         WindowId,
@@ -510,6 +520,8 @@ pub struct Reactor {
     forced_writes: HashSet<WindowId>,
     /// The user's contexts and the active context.
     contexts: Contexts,
+    native_tabs: HashMap<(pid_t, u64), native_tabs::Group>,
+    unavailable_tabs: HashSet<WindowId>,
     /// Where `contexts` are saved.
     contexts_store: ContextsStore,
     /// Whether `contexts_store` is still to be read. It is read when
@@ -790,6 +802,8 @@ impl Reactor {
             process_lookup: Box::new(Process::with_pid),
             forced_writes: HashSet::default(),
             contexts: Contexts::new(),
+            native_tabs: HashMap::default(),
+            unavailable_tabs: HashSet::default(),
             contexts_store: ContextsStore::in_memory(),
             contexts_unread: false,
             boot_id: None,
@@ -921,6 +935,8 @@ impl Reactor {
         self.settle_released_parking_guard();
         self.exit_if_windows_are_back();
         if !pointer {
+            self.remember_native_tab_policies();
+            self.fall_back_for_unidentified_tabs();
             self.publish_contexts_snapshot();
         }
     }
@@ -984,6 +1000,8 @@ impl Reactor {
                 self.app_terminated(pid);
             }
             Event::ApplicationThreadTerminated(pid) => {
+                self.native_tabs.retain(|(app, _), _| *app != pid);
+                self.unavailable_tabs.retain(|wid| wid.pid != pid);
                 self.app_terminated(pid);
                 self.guarded_app_gone(pid);
                 self.apps.remove(&pid);
@@ -1019,6 +1037,30 @@ impl Reactor {
             Event::WindowsDiscovered { pid, new, known_visible } => {
                 self.on_windows_discovered(pid, new, known_visible);
             }
+            Event::NativeTabsChanged { window, group } => {
+                self.native_tabs_changed(window, group);
+            }
+            Event::NativeTabsUnavailable(window) => {
+                self.unavailable_tabs.insert(window);
+                self.fall_back_for_unidentified_tabs();
+            }
+            Event::FrameTargetUnavailable(window) => {
+                if self.contexts_enabled()
+                    && self.window_on_screen(window)
+                    && (self.membership_window(window) == window
+                        || self.parked.contains_key(&window))
+                    && self
+                        .layout_window_info(window)
+                        .is_some_and(|info| !self.layout.is_untracked(&info))
+                    && self.screens.iter().enumerate().any(|(i, _)| {
+                        self.screen_key(i) != crate::model::contexts::ContextKey::Everything
+                    })
+                {
+                    self.abort_failed_parking(format!(
+                        "Could not verify the AX frame-write target for {window:?}"
+                    ));
+                }
+            }
             Event::WindowCreated(wid, window, mouse_state) => {
                 // TODO: It's possible for a window to be on multiple spaces
                 // or move spaces. (Add a test)
@@ -1030,6 +1072,7 @@ impl Reactor {
                 self.app_still_running(wid.pid);
                 if first_seen {
                     let decided = self.windows_first_seen(&[wid]);
+                    self.reconcile_native_tab_membership(wid.pid);
                     self.focus_windows_seen(&decided);
                 }
                 if mouse_state == MouseState::Down {
@@ -1058,27 +1101,12 @@ impl Reactor {
             },
             Event::WindowBecameVisible(wid) => {
                 if self.window_is_tracked(wid)
-                    && let Some(window) = self.windows.get(&wid)
                     && let Some(frame) = self.layout_frame(wid)
                     && let Some(space) = self.best_space_for_window(&frame)
                     && self.reaches_layout(space, wid)
                     && let Some(info) = self.layout_window_info(wid)
                 {
-                    // Check if there's already a visible window from the same app
-                    // with the same frame (indicating this is a tab). If so, don't
-                    // add - let the existing window represent this position.
-                    // Parked windows share a corner without being tabs.
-                    let frame_key = Self::frame_key(&window.frame_monotonic);
-                    let dominated_by_existing = self.visible_windows.iter().any(|wsid| {
-                        self.window_ids.get(wsid).is_some_and(|other_wid| {
-                            *other_wid != wid
-                                && other_wid.pid == wid.pid
-                                && !self.parked.contains_key(other_wid)
-                                && self.windows.get(other_wid).is_some_and(|other_window| {
-                                    Self::frame_key(&other_window.frame_monotonic) == frame_key
-                                })
-                        })
-                    });
+                    let dominated_by_existing = self.membership_window(wid) != wid;
                     if !dominated_by_existing {
                         self.send_layout_event(LayoutEvent::WindowAdded(space, wid, info));
                     }
@@ -1094,36 +1122,18 @@ impl Reactor {
                 {
                     self.hidden_windows.remove(&wsid);
                 }
-                // Check if another window will take this window's place (tab sibling)
-                // before removing it from self.windows. Parked windows share a
-                // corner without being tabs.
-                let dominated_by_sibling = !self.parked.contains_key(&wid)
-                    && self
-                        .windows
-                        .get(&wid)
-                        .map(|w| {
-                            let frame_key = Self::frame_key(&w.frame_monotonic);
-                            self.windows.iter().any(|(other_wid, other_window)| {
-                                *other_wid != wid
-                                    && other_wid.pid == wid.pid
-                                    && !self.parked.contains_key(other_wid)
-                                    && Self::frame_key(&other_window.frame_monotonic) == frame_key
-                            })
-                        })
-                        .unwrap_or(false);
                 let window = self.windows.remove(&wid);
                 if window.is_none() {
                     warn!("Got destroyed event for unknown window {wid:?}");
                 }
                 self.pending_first_seen.remove(&wid);
                 self.window_closed(wid);
+                self.unavailable_tabs.remove(&wid);
                 self.guarded_window_gone(wid);
                 self.frame_attempts.remove(&wid);
                 self.moving_away.remove(&wid);
                 self.forget_parked_window(wid, window.and_then(|window| window.window_server_id));
-                // Only send WindowRemoved if no sibling will take its place.
-                // For tabs, the sibling window already represents this position.
-                if !dominated_by_sibling {
+                if !self.native_window_destroyed(wid) {
                     self.send_layout_event(LayoutEvent::WindowRemoved(wid));
                 }
             }
@@ -1958,6 +1968,7 @@ impl Reactor {
             self.app_still_running(pid);
         }
         self.decide_membership(&first_seen);
+        self.reconcile_native_tab_membership(pid);
         self.restore_from_journal(pid);
         self.send_visible_windows_to_layout(pid);
         if self.startup_complete {
@@ -1971,11 +1982,6 @@ impl Reactor {
     /// changes (e.g., a window is minimized or unminimized).
     fn send_visible_windows_to_layout(&mut self, pid: pid_t) {
         let mut app_windows: BTreeMap<SpaceId, Vec<(WindowId, LayoutWindowInfo)>> = BTreeMap::new();
-        // Track frames we've already seen to detect overlapping windows (tabs).
-        // Windows with nearly identical frames are likely tabs in a tab group,
-        // and we should only include one of them in the layout.
-        let mut seen_frames: HashSet<(i32, i32, i32, i32)> = HashSet::default();
-        let main_window = self.main_window();
 
         for wid in self
             .visible_windows
@@ -1984,7 +1990,6 @@ impl Reactor {
             .filter(|wid| wid.pid == pid)
             .filter(|wid| self.window_is_tracked(*wid))
         {
-            let Some(window) = self.windows.get(&wid) else { continue };
             let Some(layout_info) = self.layout_window_info(wid) else {
                 continue;
             };
@@ -2004,26 +2009,8 @@ impl Reactor {
             if !(self.reaches_layout(space, wid) || parked && self.shows_on(space, wid)) {
                 continue;
             }
-            // Tabs in the same window group will have the same visual frame.
-            // Parked windows share a corner without being tabs.
-            if !parked {
-                let frame_key = Self::frame_key(&window.frame_monotonic);
-                // If we've already seen a window with this frame, skip this one
-                // unless it's the main window (active tab).
-                if seen_frames.contains(&frame_key) {
-                    if main_window != Some(wid) {
-                        continue;
-                    }
-                    // This is the main window, remove the previous entry with this frame
-                    // and add this one instead.
-                    if let Some(windows) = app_windows.get_mut(&space) {
-                        windows.retain(|(other, info)| {
-                            self.parked.contains_key(other)
-                                || Self::frame_key(&info.frame) != frame_key
-                        });
-                    }
-                }
-                seen_frames.insert(frame_key);
+            if self.membership_window(wid) != wid {
+                continue;
             }
             app_windows.entry(space).or_default().push((wid, layout_info));
         }
@@ -2120,17 +2107,6 @@ impl Reactor {
         // For now we track all windows in the reactor and let the LayoutManager
         // decide what to keep.
         true
-    }
-
-    /// Returns the frame key (rounded to integers) for a window frame.
-    /// Used to detect windows that share the same visual position (tabs).
-    fn frame_key(frame: &CGRect) -> (i32, i32, i32, i32) {
-        (
-            frame.origin.x.round() as i32,
-            frame.origin.y.round() as i32,
-            frame.size.width.round() as i32,
-            frame.size.height.round() as i32,
-        )
     }
 
     fn send_layout_event(&mut self, event: LayoutEvent) {

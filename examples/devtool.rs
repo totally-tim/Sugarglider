@@ -74,6 +74,14 @@ enum Command {
         #[arg(long, default_value_t = 200)]
         interval_ms: u64,
     },
+    /// Observe native tab identities without selecting tabs or moving windows.
+    NativeTabs {
+        pid: pid_t,
+        #[arg(long, default_value_t = 1, value_parser = clap::value_parser!(u32).range(1..=1000))]
+        samples: u32,
+        #[arg(long, default_value_t = 500, value_parser = clap::value_parser!(u64).range(50..=10000))]
+        interval_ms: u64,
+    },
     /// Probe parking with the production bottom-strip rule. Explicit corner
     /// choices are diagnostic probes and can use unsupported geometry.
     #[command()]
@@ -400,6 +408,37 @@ async fn main() -> anyhow::Result<()> {
         }
         Command::Inspect => inspect(MainThreadMarker::new().unwrap()),
         Command::Focus { interval_ms } => watch_focus(Duration::from_millis(interval_ms)),
+        Command::NativeTabs { pid, samples, interval_ms } => {
+            let app = AXUIElement::application(pid);
+            let mut tracker = sugarglider::model::native_tabs::TabTracker::<
+                objc2_core_foundation::CFRetained<AXUIElement>,
+            >::default();
+            for sample in 0..samples {
+                for window in app.windows()?.iter() {
+                    let id = WindowServerId::try_from(&*window)?;
+                    let wid = actor::app::WindowId::with_wsid(pid, id);
+                    let known = tracker.bar_for_window(wid).map(|bar| &**bar);
+                    match sys::native_tabs::read(&window, known) {
+                        Ok(Some(bar)) => {
+                            let group = tracker
+                                .observe(wid, bar.element, bar.tabs, bar.selected)
+                                .context("invalid native tab identities")?;
+                            println!("sample={sample} {}", serde_json::to_string(&group)?);
+                        }
+                        Ok(None) => {
+                            tracker.forget_window(wid);
+                            println!("sample={sample} standalone={wid:?}");
+                        }
+                        Err(error) => {
+                            println!("sample={sample} unavailable={wid:?} error={error}");
+                        }
+                    }
+                }
+                if sample + 1 < samples {
+                    tokio::time::sleep(Duration::from_millis(interval_ms)).await;
+                }
+            }
+        }
         Command::Park {
             pid,
             window_server_id,

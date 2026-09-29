@@ -156,7 +156,9 @@ impl Reactor {
     /// A parked window may not, whatever its geometry says. Under a context
     /// only the context's members may.
     pub(super) fn reaches_layout(&self, space: SpaceId, wid: WindowId) -> bool {
-        !self.parked.contains_key(&wid) && self.shows_on(space, wid)
+        self.membership_window(wid) == wid
+            && !self.parked.contains_key(&wid)
+            && self.shows_on(space, wid)
     }
 
     /// The visible screens and the contexts they show after `apply`. A
@@ -401,7 +403,7 @@ impl Reactor {
             window.untracked = self.layout.is_untracked(&info);
             // Windows on Spaces Sugarglider doesn't manage count as
             // invisible too, and the plan never parks them.
-            window.invisible = !visible;
+            window.invisible = !visible || self.membership_window(wid) != wid;
             input.screens[slot].windows.push(window);
         }
         input
@@ -418,6 +420,13 @@ impl Reactor {
     fn apply(&mut self, apply: Apply) -> Result<(SwitchPlan, Option<EventResponse>), ApplyError> {
         let spaces = self.shown_spaces(apply);
         let only = Self::only_position(apply, &spaces);
+        if self.unidentified_native_tabs()
+            && spaces.iter().any(|shown| shown.key != ContextKey::Everything)
+        {
+            let reason = Self::unidentified_tabs_message().to_string();
+            self.abort_failed_parking(reason.clone());
+            return Err(ApplyError::ParkingAborted(reason));
+        }
         let plan = plan_switch(&self.switch_input(&spaces, only));
         let parking = match self
             .check_on_screen_nonmembers(&spaces, only)
@@ -1241,6 +1250,7 @@ mod tests {
     mod management;
     mod membership;
     mod membership_rules;
+    mod native_tabs;
     mod replay_rules;
     mod scope;
     mod switcher;

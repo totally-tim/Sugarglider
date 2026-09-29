@@ -9,6 +9,7 @@ pub mod event;
 pub mod executor;
 pub mod geometry;
 pub mod message_port;
+pub mod native_tabs;
 pub mod observer;
 pub mod run_loop;
 pub mod screen;

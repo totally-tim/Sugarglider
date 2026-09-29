@@ -104,6 +104,17 @@ impl Window {
         }
     }
 
+    pub(super) fn replace_at(&mut self, node: NodeId, wid: WindowId) {
+        let old = self.windows.insert(node, wid).expect("window leaf must exist");
+        if let Some(nodes) = self.window_nodes.get_mut(&old) {
+            nodes.retain(|other| *other != node);
+            if nodes.is_empty() {
+                self.window_nodes.remove(&old);
+            }
+        }
+        self.window_nodes.entry(wid).or_default().push(node);
+    }
+
     pub fn set_capacity(&mut self, capacity: usize) {
         self.windows.set_capacity(capacity);
         // There's not currently a stable way to do this for BTreeMap.

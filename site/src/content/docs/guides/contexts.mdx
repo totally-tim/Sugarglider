@@ -6,7 +6,7 @@ description: Named sets of windows with their own tiling layouts
 Contexts are an experimental feature: named sets of windows that you switch between. Each context keeps its own tiling layout. Switching shows its windows and parks the others at a bottom corner. A parked window may leave a strip up to 1 point wide and 32 points tall on its display. Sugarglider closes nothing, and a window can belong to several contexts.
 
 :::caution[Experimental]
-Contexts are off by default. The switcher, per-screen scope, and command line are implemented. One-display TextEdit parking has been measured, but full context switching, other apps, and two-display behavior still need hands-on macOS checks.
+Contexts are off by default. The switcher, per-screen scope, and command line are implemented. One-display live QA verified TextEdit switching and fallback to Everything when Calculator or Chrome refused the parking limit. Two-display behavior, recovery, and the remaining UI paths still need hands-on macOS checks.
 :::
 
 ## Turn it on
@@ -18,7 +18,7 @@ Turn on **Contexts (experimental)** in the Preferences window, or set the flag i
 contexts.enable = true
 ```
 
-Run `sugarglider config update` to load the edited file, or `sugarglider config update --watch` to reload on every save. With the flag off, Sugarglider behaves as it did before contexts.
+Run `sugarglider config update` to load the edited file, or `sugarglider config update --watch` to reload on every save. With the flag off, Sugarglider does not park windows for contexts, and context commands are disabled.
 
 ## Create a context
 
@@ -42,6 +42,8 @@ Switch with a key binding, the menu bar, or the command line. The default config
 "Ctrl + Alt + Tab" = "previous_context"
 "Ctrl + Alt + Space" = "open_context_switcher"
 ```
+
+In these config strings, `Alt` means the Mac's Option (⌥) key.
 
 - `switch_context` takes a context number from 1 to 9 or a name. Part of a name works: "cli" finds "Client work".
 - `show_everything` shows every window again.
@@ -73,6 +75,12 @@ Use `--name` when a context's name is made of digits, so the command doesn't rea
 An added window stays where it is until the next switch, even if you move between Spaces in the meantime. Moving and removing take effect at once, and a window that no longer belongs to the context you are in is parked. Focus moves to a window that stays.
 
 A **pinned** window belongs to every context, including contexts you create later. It also shows under Unsorted, but it doesn't count as an unsorted window.
+
+## Native window tabs
+
+Native macOS window tabs share one context membership and one tile. Sugarglider identifies each tab when you select it. If a group contains tabs it has not identified yet, it shows Everything on all managed screens. Select each tab once, then switch contexts again, including after restarting Sugarglider. Sugarglider does not select tabs automatically. Separate overlapping windows remain independent.
+
+This applies to native window tabs, such as TextEdit's tabs. Browser document tabs and ordinary tabs inside a window stay independent of native window tab groups.
 
 ## Everything and Unsorted
 
@@ -115,7 +123,7 @@ sugarglider context forget <query> <record>
 
 Switching never closes a window. Before Sugarglider parks a window, it writes the window's frame to `~/.glide/parked.json`. If Sugarglider quits or crashes, the next launch reads that file and puts the windows back. The contexts and their members live in `~/.glide/contexts.json`. Both files contain window titles.
 
-Sugarglider checks the frame that macOS reports after parking. It accepts only a bottom-corner strip within the 1 by 32 point limit, with no overlap on another display. If a window cannot meet that limit, the context switch fails, Sugarglider shows Everything, and it restores parked windows from their saved frames. Some apps or display arrangements may therefore prevent a context from staying active. One-display TextEdit testing confirmed a 1 by 32 point strip; other apps and two-display setups still need physical QA.
+Sugarglider checks the frame that macOS reports after parking. It accepts only a bottom-corner strip within the 1 by 32 point limit, with no overlap on another display. If a window cannot meet that limit, the context switch fails, Sugarglider shows Everything, and it restores parked windows from their saved frames. Some apps or display arrangements may therefore prevent a context from staying active. One-display TextEdit testing confirmed a 1 by 32 point strip. In the tested Chrome version, the strip was 41 points tall, so switching fell back to Everything. Other app versions and two-display setups still need physical QA.
 
 ## Per-screen scope
 
