@@ -1,6 +1,6 @@
 # Contexts
 
-Status: M2 through M10 are integrated in this working branch behind `settings.experimental.contexts.enable`, which defaults to false. PR #25 remains draft pending physical QA. Written 2026-09-25, revised 2026-09-30.
+Status: M2 through M10 are integrated in this working branch behind `settings.experimental.contexts.enable`, which defaults to false. PR #25 remains draft pending physical QA. Written 2026-09-25, revised 2026-10-02.
 
 Code references name symbols first; line numbers are hints and will drift.
 
@@ -78,6 +78,10 @@ And during the September 29 live QA:
 - Sugarglider identifies each tab's window when the user selects it. It does not select tabs automatically. Until every tab is identified, it shows Everything and explains that the user must select each tab before switching contexts.
 - Investigate Chrome's observed 41-point strip before proposing a new H1 limit. The approved production limit remains 32 points.
 
+And on October 1:
+
+- Context names must appear directly in Raycast and SuperCmd main search. Sugarglider maintains one launcher command per context, with a one-time Raycast script-folder import and automatic discovery in the installed SuperCmd. Creating, renaming, or deleting a context updates those commands automatically.
+
 ## Terms
 
 - **Context**: a named set of windows. It has its own layout on each Space, and on each screen size, like today's layouts.
@@ -95,7 +99,7 @@ And during the September 29 live QA:
 1. **Save a context.** You have the windows for a job open. You press ⌃⌥Space and type "Sugarglider". You choose "New context". The switcher lists the windows on screen, all checked. You uncheck the ones that don't belong and press Enter. The new context's layout starts as your current layout without the unchecked windows.
 2. **Switch by name.** You press ⌃⌥Space, type "cli", and press Enter. The "Client work" windows appear in their layout. All other windows hide.
 3. **Switch by number.** You press ⌃⌥2.
-4. **Switch from a launcher.** In Raycast or SuperCmd you run "Switch Context" and type "cli".
+4. **Switch from a launcher.** Open Raycast or SuperCmd, type "Client work" in its main search, and press Return on the context result.
 5. **Keep working.** You open a new window. It joins the context you're in.
 6. **Share a window.** WhatsApp is in "Comms" and "Relax". It has its own place in each layout.
 7. **Fix a mistake.** A window is in the wrong context. You focus it and open the switcher. ⌘↩ adds it to the highlighted context. ⇧⌘↩ moves it there.
@@ -296,6 +300,7 @@ The default config ships these bindings commented out while the feature is exper
 ### Command line
 
 ```
+sugarglider context launcher-path
 sugarglider context list [--json]
 sugarglider context current [--json]
 sugarglider context switch <query>
@@ -312,6 +317,7 @@ sugarglider context pin
 sugarglider context forget <query> <record>
 ```
 
+- `launcher-path` prints the managed script-command folder without contacting the server. `--id` takes a stable context ID from `list --json` and bypasses name matching; it cannot be combined with `--name`.
 - `<query>` is a number or a name. The reactor resolves it with `model::contexts::resolve`: a number from 1 to 9 or an id names that context, and any other name matches exactly or by the switcher's ranking among the named contexts. A name made of digits, such as "2024", names the context by its number unless `--name` says it is a name. Everything and Unsorted match only their exact names, and Unsorted only while it is listed, so an empty Unsorted is never offered (I3).
 - `create` makes a context whose members are the tracked windows on the visible Spaces. Parked windows are left out, and a pinned window gets no record, because it is a member of every context already (R3). The new context becomes the active context.
 - `pin` pins or unpins the focused window. `forget` removes a gone window's member record from a named context. Pass the context as `<query>` and the zero-based `record` value from that context's `members` array in `list --json`. An open window's record cannot be forgotten; remove its window instead. The command reads the current snapshot first, then the reactor checks the record's app and title again before removing it. If the list changed, list the contexts again and use the new index.
@@ -326,13 +332,13 @@ sugarglider context forget <query> <record>
   "active": "Comms",
   "screens": [{ "id": 1, "active": "Comms" }],
   "contexts": [
-    { "name": "Comms", "number": 1, "active": true, "apps": ["WhatsApp", "Microsoft Teams"], "windows": 2,
+    { "id": 1, "name": "Comms", "number": 1, "active": true, "apps": ["WhatsApp", "Microsoft Teams"], "windows": 2,
       "members": [
         { "record": 0, "app": "WhatsApp", "title": "WhatsApp", "window": { "pid": 903, "idx": 9201 } },
         { "record": 1, "app": "Microsoft Teams", "title": "Team", "window": { "pid": 904, "idx": 9202 } },
         { "record": 2, "app": "Mail", "title": "Inbox", "window": null }
       ] },
-    { "name": "Relax", "number": 2, "active": false, "apps": ["WhatsApp", "Google Chrome"], "windows": 2, "members": [] }
+    { "id": 2, "name": "Relax", "number": 2, "active": false, "apps": ["WhatsApp", "Google Chrome"], "windows": 2, "members": [] }
   ],
   "unsorted": 3
 }
@@ -340,23 +346,17 @@ sugarglider context forget <query> <record>
 
 ### Raycast and SuperCmd
 
-A Raycast [script command](https://github.com/raycast/script-commands) needs no published extension. Ship it as `contrib/raycast/switch-context.sh`:
+With Contexts enabled, Sugarglider maintains a command for each named context in `~/.config/raycast/script-commands/sugarglider-contexts`. Add that folder once in Raycast's Script Commands settings. SuperCmd 1.0.26 scans it automatically. Type a context name in the main search, select its result under Sugarglider Contexts, and press Return. Everything is also available; Unsorted appears while the snapshot lists it.
 
-```bash
-#!/bin/bash
-# @raycast.schemaVersion 1
-# @raycast.title Switch Context
-# @raycast.mode compact
-# @raycast.packageName Sugarglider
-# @raycast.argument1 { "type": "text", "placeholder": "Context" }
-set -euo pipefail
-/usr/local/bin/sugarglider context switch "$1" 2>&1
-```
+`actor::context_launchers` receives the same snapshots as the CLI and menu. A separate worker coalesces updates and writes commands after creation, rename, deletion, and changes to Unsorted. Disabling Contexts removes the generated commands unless a filesystem or ownership conflict blocks the update. Quitting the manager leaves them indexed; invoking one then reports that Sugarglider is not running. It never launches the manager.
 
-- `make install` puts the binary in `/usr/local/bin`. Raycast adds that directory to `PATH`, but the absolute path avoids depending on that.
-- In `compact` mode Raycast shows the last output line, and treats a non-zero exit as a failure. `2>&1` makes the error text visible.
-- SuperCmd's documentation says it imports Raycast script-command folders and runs most Raycast extensions. Nobody has tested this with Sugarglider yet.
-- A full Raycast extension with a searchable list is a later item.
+Each command's filename and action use a stable context ID. Renaming changes its title without changing its identity. A deleted context cannot fall through to a similar name. IDs remain stable within the saved context database; replacing or deleting that database can reuse IDs, so recreate launcher hotkeys or aliases after such a reset. Scripts quote the absolute CLI path beside the running server, pass only the ID, and preserve CLI errors. Context names enter only sanitized metadata comments. This supports installed binaries and development builds without assuming `/usr/local/bin`.
+
+The worker keeps an ownership manifest, checks the whole batch before changing files, and preserves unrelated files, user edits, and symbolic links. It records intended writes before replacing files, so a later update can finish an interrupted batch. A file lock excludes another writer. An ownership conflict blocks the complete batch, including disabling; the warning names the file to inspect. Healthy workers sleep until a snapshot changes. Failed updates retry with a delay that grows to 60 seconds. Filesystem failures log a warning and retry outside the reactor; they do not delay window switching.
+
+[Raycast documents script indexing and automatic metadata refresh](https://manual.raycast.com/script-commands). The installed SuperCmd 1.0.26 parser reads the same metadata, imports script-command folders, and caches discovery for 12 seconds. The installed parser and runner passed an isolated generated-command probe; visible main-search behavior and successful live switches remain unverified. Raycast is not installed on the QA laptop. See the [October 2 launcher QA record](contexts-launcher-qa-2026-10-02.md).
+
+The optional `contrib/raycast/switch-context.sh` accepts a typed query as a launcher fallback command. A separate extension with a context list and management actions remains a later item; direct main-search switching uses the generated commands.
 
 ### Preferences
 
@@ -809,13 +809,13 @@ Manual QA (a person, on a real Mac):
 - Lock the screen while a context is active. Nothing comes back from parking (R33).
 - `kill -9` on the server while windows are parked, then relaunch. Also check R35 without relaunching.
 - `save_and_exit` and `--restore`.
-- The Raycast script. SuperCmd importing the script folder.
+- Direct name search and Return in Raycast after importing the generated folder, and in SuperCmd after automatic discovery. Create, rename, and delete contexts while the launcher is open, then check refresh, stale-result errors, Everything, Unsorted, disabled Contexts, and a stopped server. Check successful switching in both scopes.
 - ⌃⌥Space with two keyboard input sources enabled.
 
 ## Later
 
 - Open the apps of a context that aren't running, and match their windows as they appear.
-- A Raycast extension with a searchable list.
+- A Raycast extension with a context list and management actions. Direct main-search switching is implemented through generated commands.
 - Layout previews in the switcher.
 - Keeping layout shapes across reboots.
 - A `SIGTERM` handler that shows Everything before exit.

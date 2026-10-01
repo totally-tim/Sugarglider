@@ -63,6 +63,22 @@ sugarglider context switch --name 2024
 
 Use `--name` when a context's name is made of digits, so the command doesn't read it as a number. On failure the command prints the reason and exits with status 1.
 
+## Raycast and SuperCmd
+
+You can type a context's name directly in your launcher's main search and press Return on its **Sugarglider Contexts** result.
+
+With Contexts enabled and Sugarglider running, add this folder once to Raycast's Script Commands settings. SuperCmd 1.0.26 scans it automatically:
+
+```text
+~/.config/raycast/script-commands/sugarglider-contexts
+```
+
+Run `sugarglider context launcher-path` to print its absolute path. Sugarglider maintains one command per context and updates it when you create, rename, or delete the context. Everything and any listed Unsorted context are available too. Disabling Contexts removes the generated commands unless a filesystem or ownership conflict blocks the update.
+
+The commands call the CLI beside the running server. Development builds need both the server and CLI binaries. If Sugarglider is stopped, they report that it is not running; they do not start it. Leave generated files unchanged. An edited file blocks the whole update, including removals, and Sugarglider logs the conflict. IDs are stable within the saved context database; recreate launcher shortcuts if you replace or delete that database.
+
+Raycast documents automatic reindexing of metadata edits. Discovery of new and deleted commands still needs physical QA. SuperCmd 1.0.26 caches script discovery for 12 seconds. Successful switching through both launchers still needs physical QA.
+
 ## Add, move, and pin windows
 
 | Action | How |
@@ -101,6 +117,7 @@ Quitting Sugarglider puts every parked window back too.
 The context commands are:
 
 ```
+sugarglider context launcher-path
 sugarglider context list [--json]
 sugarglider context current [--json]
 sugarglider context create <name>
@@ -116,6 +133,8 @@ sugarglider context number <query> <number>
 sugarglider context pin
 sugarglider context forget <query> <record>
 ```
+
+`list --json` includes stable context IDs. Use `sugarglider context switch --id <id>` to select one without name matching. `--id` and `--name` cannot be combined.
 
 `list` prints one line per entry, with a star on the active one. `--json` prints the snapshot as JSON, and `current` prints the active context's name. `pin` toggles pinning for the focused window. `forget` removes a gone window's member record from a named context. Use its zero-based `members[].record` value from `context list --json`; an open window's record cannot be forgotten.
 

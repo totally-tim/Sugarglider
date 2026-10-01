@@ -44,6 +44,12 @@ pub fn contexts_file() -> PathBuf {
     data_dir().join("contexts.json")
 }
 
+pub fn context_commands_dir() -> PathBuf {
+    dirs::home_dir()
+        .expect("Could not determine home directory")
+        .join(".config/raycast/script-commands/sugarglider-contexts")
+}
+
 pub fn config_path() -> PathBuf {
     let try_paths = default_config_paths();
     for path in &try_paths {

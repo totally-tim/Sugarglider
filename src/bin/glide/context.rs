@@ -12,7 +12,7 @@ use serde::Serialize;
 use sugarglider::actor::contexts_snapshot::{ContextsSnapshot, MemberSummary, RequestId, Scope};
 use sugarglider::actor::reactor::{ContextCommand, ContextRef, RecordRef};
 use sugarglider::actor::server::{ContextRequest, Request, Response};
-use sugarglider::model::contexts::{ContextError, ContextKey};
+use sugarglider::model::contexts::{ContextError, ContextId, ContextKey};
 use sugarglider::sys::message_port::SendError;
 
 /// What the command says when the server replies with nothing, which is how
@@ -32,6 +32,8 @@ const RESULT_POLLS: u32 = 50;
 
 #[derive(Subcommand, Clone, Debug, PartialEq)]
 pub enum CmdContext {
+    /// Print the script folder to import in Raycast or SuperCmd.
+    LauncherPath,
     /// List the contexts.
     List(Output),
     /// Print the active context.
@@ -94,6 +96,9 @@ pub struct Query {
     /// named "2024".
     #[arg(long)]
     name: bool,
+    /// Use a stable context ID from `list --json`, without fuzzy matching.
+    #[arg(long, conflicts_with = "name")]
+    id: bool,
 }
 
 #[derive(Args, Clone, Debug, PartialEq)]
@@ -138,10 +143,17 @@ fn execute<T: Transport>(
     command: &CmdContext,
     connect: impl FnOnce() -> Option<T>,
 ) -> Result<String, String> {
+    if matches!(command, CmdContext::LauncherPath) {
+        return Ok(format!(
+            "{}\n",
+            sugarglider::actor::context_launchers::directory().display()
+        ));
+    }
     let id = new_request_id();
     let run = |command| ContextRequest::Run(id, command);
     let mut transport = connect().ok_or("Sugarglider isn't running.")?;
     let request = match command {
+        CmdContext::LauncherPath => unreachable!("handled before connecting"),
         CmdContext::List(_) => ContextRequest::List,
         CmdContext::Current(_) => ContextRequest::Current,
         CmdContext::Create { name } => run(ContextCommand::CreateContext(name.clone())),
@@ -261,8 +273,15 @@ fn unexpected(response: &Response) -> String {
 /// text is a name, and so is a number with `--name`. The reactor matches
 /// names with the switcher's ranking.
 fn parse_query(query: &Query) -> Result<ContextRef, String> {
-    let Query { query, name } = query;
+    let Query { query, name, id } = query;
     let trimmed = query.trim();
+    if *id {
+        let value =
+            trimmed.parse::<u32>().ok().filter(|id| *id != 0).ok_or_else(|| {
+                "A context ID must be an integer from 1 to 4294967295".to_string()
+            })?;
+        return Ok(ContextRef::Id(ContextId::from_raw(value)));
+    }
     if *name || trimmed.is_empty() || !trimmed.bytes().all(|b| b.is_ascii_digit()) {
         return Ok(ContextRef::Name(query.to_string()));
     }
@@ -362,6 +381,7 @@ struct ScreenJson<'a> {
 
 #[derive(Serialize)]
 struct ContextJson<'a> {
+    id: u32,
     name: &'a str,
     number: Option<u8>,
     active: bool,
@@ -389,6 +409,7 @@ fn json(snapshot: &ContextsSnapshot) -> String {
             .contexts
             .iter()
             .map(|context| ContextJson {
+                id: context.id.get(),
                 name: &context.name,
                 number: context.number,
                 active: snapshot.active == ContextKey::Named(context.id),
@@ -657,11 +678,53 @@ mod tests {
         Query {
             query: text.into(),
             name: false,
+            id: false,
         }
     }
 
     fn by_name(text: &str) -> Query {
-        Query { query: text.into(), name: true }
+        Query {
+            query: text.into(),
+            name: true,
+            id: false,
+        }
+    }
+
+    #[test]
+    fn launcher_ids_are_exact_and_wait_for_the_command_result() {
+        let ran = run_with_results(
+            &["switch", "--id", "42"],
+            vec![Response::Pending, Response::Success],
+        );
+        assert_eq!(0, ran.status);
+        assert!(
+            matches!(&ran.requests[0], ContextRequest::Run(_, ContextCommand::SwitchContext(ContextRef::Id(value))) if value.get() == 42)
+        );
+        assert_eq!(3, ran.requests.len());
+        let failed = run_with_results(
+            &["switch", "--id", "42"],
+            vec![Response::Error("No such context".into())],
+        );
+        assert_eq!(1, failed.status);
+        assert!(failed.err.contains("No such context"));
+        for value in ["0", "-1", "3.5", "4294967296", "Client work"] {
+            assert!(
+                parse_query(&Query {
+                    query: value.into(),
+                    name: false,
+                    id: true
+                })
+                .is_err()
+            );
+        }
+        assert!(parse(&["switch", "--id", "--name", "42"]).is_err());
+    }
+
+    #[test]
+    fn launcher_path_does_not_require_a_running_server() {
+        let ran = run_raw(&["launcher-path"], None);
+        assert_eq!(0, ran.status);
+        assert!(ran.out.ends_with("/.config/raycast/script-commands/sugarglider-contexts\n"));
     }
 
     /// Clap's own errors, such as a missing argument, exit with status 2
@@ -833,7 +896,7 @@ mod tests {
               "active": "Comms",
               "screens": [{ "id": 1, "active": "Comms" }],
               "contexts": [
-                { "name": "Comms", "number": 1, "active": true,
+                { "id": 1, "name": "Comms", "number": 1, "active": true,
                   "apps": ["WhatsApp", "Microsoft Teams"], "windows": 2,
                   "members": [
                     { "record": 0, "app": "WhatsApp", "title": "WhatsApp",
@@ -842,7 +905,7 @@ mod tests {
                       "window": { "pid": 904, "idx": 9202 } },
                     { "record": 2, "app": "Mail", "title": "Inbox", "window": null }
                   ] },
-                { "name": "Relax", "number": 2, "active": false,
+                { "id": 2, "name": "Relax", "number": 2, "active": false,
                   "apps": ["WhatsApp", "Google Chrome"], "windows": 2,
                   "members": [] }
               ],
@@ -1439,7 +1502,7 @@ mod tests {
                 { "id": 2, "active": "Everything" }
               ],
               "contexts": [
-                { "name": "Comms", "number": 1, "active": false,
+                { "id": 1, "name": "Comms", "number": 1, "active": false,
                   "apps": ["WhatsApp", "Microsoft Teams"], "windows": 2,
                   "members": [
                     { "record": 0, "app": "WhatsApp", "title": "WhatsApp",
@@ -1448,7 +1511,7 @@ mod tests {
                       "window": { "pid": 904, "idx": 9202 } },
                     { "record": 2, "app": "Mail", "title": "Inbox", "window": null }
                   ] },
-                { "name": "Relax", "number": null, "active": false,
+                { "id": 2, "name": "Relax", "number": null, "active": false,
                   "apps": [], "windows": 0, "members": [] }
               ],
               "unsorted": 0
@@ -1498,7 +1561,7 @@ mod tests {
               "active": "Comms",
               "screens": [{ "id": 1, "active": "Comms" }],
               "contexts": [
-                { "name": "Comms", "number": 1, "active": true,
+                { "id": 1, "name": "Comms", "number": 1, "active": true,
                   "apps": ["WhatsApp", "Microsoft Teams"], "windows": 2,
                   "members": [
                     { "record": 0, "app": "WhatsApp", "title": "WhatsApp",

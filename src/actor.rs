@@ -12,6 +12,7 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use tracing::Span;
 
 pub mod app;
+pub mod context_launchers;
 pub mod contexts_snapshot;
 pub mod contexts_store;
 pub mod dock;

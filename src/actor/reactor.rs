@@ -727,8 +727,14 @@ impl Reactor {
                 reactor.layout_file = Some(crate::config::restore_file());
                 reactor.exit = Box::new(|code| std::process::exit(code));
                 let contexts_status_tx = status_tx.clone();
+                let launchers = crate::actor::context_launchers::spawn()
+                    .inspect_err(|error| warn!("Could not start launcher command updates: {error}"))
+                    .ok();
                 reactor.publish_contexts = Box::new(move |snapshot| {
                     crate::actor::contexts_snapshot::publish(snapshot.clone());
+                    if let Some(launchers) = &launchers {
+                        launchers.send(snapshot.clone());
+                    }
                     contexts_status_tx.send(status::Event::ContextsChanged(snapshot));
                 });
                 reactor.publish_contexts_snapshot();
