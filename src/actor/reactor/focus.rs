@@ -240,15 +240,12 @@ impl Reactor {
         let new_focus_wait = raise.is_some() || finder.is_some();
         let guard = &mut self.switch_guard;
         guard.echoes.extend(parked);
-        match raise {
-            Some((sequence_id, focus)) => {
-                guard.raise = Some(RaiseWait {
-                    sequence_id,
-                    focus,
-                    sent: false,
-                });
-            }
-            None => {}
+        if let Some((sequence_id, focus)) = raise {
+            guard.raise = Some(RaiseWait {
+                sequence_id,
+                focus,
+                sent: false,
+            });
         }
         if finder.is_some() {
             guard.finder = finder;

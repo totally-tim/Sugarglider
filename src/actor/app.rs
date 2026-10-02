@@ -466,8 +466,8 @@ impl State {
         match self.app.windows() {
             Ok(initial_window_elements) => {
                 // Process the list and register notifications on all windows.
-                self.windows.reserve(initial_window_elements.len() as usize);
-                windows.reserve(initial_window_elements.len() as usize);
+                self.windows.reserve(initial_window_elements.len());
+                windows.reserve(initial_window_elements.len());
                 for elem in initial_window_elements.iter() {
                     let elem = elem.clone();
                     let Some((info, wid)) = self.register_window(elem) else {
@@ -702,10 +702,11 @@ impl State {
                 let last_seen_txid = window.last_seen_txid;
                 // Apply the deferred full-frame fixup while enhanced UI is still
                 // disabled and before restarting notifications.
-                if can_write && let Some(frame) = last_animation_frame {
-                    if let Err(e) = set_window_frame_with_retries(&elem, frame) {
-                        warn!("Failed to apply frame fixup after animation: {e}");
-                    }
+                if can_write
+                    && let Some(frame) = last_animation_frame
+                    && let Err(e) = set_window_frame_with_retries(&elem, frame)
+                {
+                    warn!("Failed to apply frame fixup after animation: {e}");
                 }
                 if remaining_animations == 0 && self.restore_enhanced_ui_on_last_end {
                     _ = trace("set_enhanced_user_interface", &self.app, || {

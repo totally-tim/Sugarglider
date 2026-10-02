@@ -255,14 +255,14 @@ impl Reactor {
                     .map(|parked| parked.before)
             });
         let Some(before) = before else { return };
-        if let Some(entry) = self.journal_entry(selected, before) {
-            if let Err(err) = self.journal.record(vec![entry]) {
-                error!(
-                    ?selected,
-                    ?err,
-                    "Could not record selected native tab; preserving the old journal and restoring Everything"
-                );
-            }
+        if let Some(entry) = self.journal_entry(selected, before)
+            && let Err(err) = self.journal.record(vec![entry])
+        {
+            error!(
+                ?selected,
+                ?err,
+                "Could not record selected native tab; preserving the old journal and restoring Everything"
+            );
         }
         self.fail_parking_results_for(&inactive, "The selected native tab changed during parking");
         for wid in inactive {

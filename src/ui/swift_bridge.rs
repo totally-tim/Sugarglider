@@ -110,10 +110,10 @@ pub fn is_available() -> bool {
 /// Sends a fresh show payload to Swift, which copies it before returning.
 pub fn show_context_switcher(json: String) {
     #[cfg(feature = "swift-ui")]
-    if is_available() {
-        if let Ok(json) = CString::new(json) {
-            unsafe { sugarglider_show_context_switcher(json.as_ptr()) };
-        }
+    if is_available()
+        && let Ok(json) = CString::new(json)
+    {
+        unsafe { sugarglider_show_context_switcher(json.as_ptr()) };
     }
     #[cfg(not(feature = "swift-ui"))]
     let _ = json;

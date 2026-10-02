@@ -28,10 +28,10 @@ impl Reactor {
             } else if group.representative == window {
                 keep_leaf = true;
             }
-            if group.owner == window {
-                if let Some(owner) = group.snapshot.members.iter().flatten().next() {
-                    group.owner = *owner;
-                }
+            if group.owner == window
+                && let Some(owner) = group.snapshot.members.iter().flatten().next()
+            {
+                group.owner = *owner;
             }
         }
         self.native_tabs.retain(|_, group| !group.snapshot.members.is_empty());
@@ -79,10 +79,10 @@ impl Reactor {
                     .snapshot
                     .members
                     .retain(|member| member.is_none_or(|wid| !moved.contains(&wid)));
-                if moved.contains(&group.owner) {
-                    if let Some(owner) = group.snapshot.members.iter().flatten().next() {
-                        group.owner = *owner;
-                    }
+                if moved.contains(&group.owner)
+                    && let Some(owner) = group.snapshot.members.iter().flatten().next()
+                {
+                    group.owner = *owner;
                 }
                 if moved.contains(&group.representative) {
                     group.representative = group.owner;

@@ -109,9 +109,9 @@ impl Record {
         let Some(file) = self.file() else { return };
         let config = ron::ser::to_string(&config).unwrap();
         let layout = ron::ser::to_string(&layout).unwrap();
-        write!(file, "{config}\n").unwrap();
+        writeln!(file, "{config}").unwrap();
         let layout_at = file.stream_position().unwrap();
-        write!(file, "{layout}\n").unwrap();
+        writeln!(file, "{layout}").unwrap();
         let layout_end = file.stream_position().unwrap();
         self.layout_line = Some((layout_at, layout_end - layout_at));
     }
@@ -129,7 +129,7 @@ impl Record {
             let end = at + len;
             if file.metadata().is_ok_and(|meta| meta.len() == end) {
                 file.seek(SeekFrom::Start(at)).unwrap();
-                write!(file, "{layout}\n").unwrap();
+                writeln!(file, "{layout}").unwrap();
                 let after = file.stream_position().unwrap();
                 if after < end {
                     file.set_len(after).unwrap();
@@ -137,13 +137,13 @@ impl Record {
                 file.seek(SeekFrom::End(0)).unwrap();
             }
         }
-        write!(file, "{line}\n").unwrap();
+        writeln!(file, "{line}").unwrap();
     }
 
     pub(super) fn on_event(&mut self, event: &Event) {
         let Some(file) = self.file() else { return };
         let line = ron::ser::to_string(&event).unwrap();
-        write!(file, "{line}\n").unwrap();
+        writeln!(file, "{line}").unwrap();
     }
 }
 
