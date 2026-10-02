@@ -125,7 +125,7 @@ R8, R9, R11, and R26 apply to `per_screen` scope.
   5. Focus a window. A switch that R24 started focuses the window the user focused. Any other switch focuses C's most recently focused member.
   6. If no window can take focus in step 5, activate Finder through the window server, the way the raise path makes an app frontmost, so keystrokes don't go to a parked window. A refused activation is reported, so the wait for Finder ends either way.
 
-  Steps 5 and 6 also run when Sugarglider applies the active context outside a switch: at `StartupComplete`, and when a config reload turns contexts on. If the apply parked the window that had the focus, its context's most recently focused member takes the focus, or Sugarglider activates Finder when there is none (`apply_again_focusing_parked_main`).
+  Steps 5 and 6 also run when Sugarglider applies the active context outside a switch: at `StartupComplete`, after a config reload, and after a Space or display change. If the apply parked the window that had the focus, its context's most recently focused member takes the focus, or Sugarglider activates Finder when there is none (`show_visible_spaces`).
 - **R13.** A window "must show" when it is a member of the active context of the screen it is on, or will move to (R8). Under Everything, every window on that screen's visible Space must show.
 - **R14.** Sugarglider never parks:
   - its own windows;
@@ -567,7 +567,7 @@ scope = "global"
 ```
 
 - Declare the struct with `#[derive(PartialConfig!)]` inside `Experimental` (`src/config.rs`). Every field needs a value in `sugarglider.default.toml`; the tests `default_config_is_valid` and `default_settings_match_unspecified_setting_values` check this.
-- On a config reload that sets `enable = false`, Sugarglider shows Everything (R33). A reload that changes `scope` applies R11.
+- On a config reload that sets `enable = false`, Sugarglider shows Everything (R33). A reload that changes `scope` applies R11 before changing which windows show. The saved active contexts follow scope edits made while the feature is disabled; a contexts file that has not been read stays unchanged until the feature is enabled.
 
 ## Implementation traps
 

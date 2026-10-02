@@ -1177,8 +1177,8 @@ impl Contexts {
         self.rejoin_all(std::slice::from_ref(window), pass).pop().unwrap_or_default()
     }
 
-    /// Decides the membership of windows that appeared on a screen that
-    /// shows `screen_active`, and returns what happened to each, in the
+    /// Decides the membership of a batch of windows, each paired with the
+    /// active context of its screen. Returns what happened to each, in the
     /// order of `windows`.
     ///
     /// The windows are matched together (see [`match_windows`]). A window
@@ -1192,28 +1192,24 @@ impl Contexts {
     /// example from being minimized, from a new one: both would join the
     /// active context. Windows found before `StartupComplete` go to
     /// [`Contexts::rejoin_all`].
-    pub fn windows_appeared(
-        &mut self,
-        windows: &[WindowDesc],
-        screen_active: ContextKey,
-    ) -> Vec<Arrival> {
-        let unsorted: Vec<bool> = windows.iter().map(|w| self.is_unsorted(w.wid)).collect();
+    pub fn windows_appeared(&mut self, windows: &[(WindowDesc, ContextKey)]) -> Vec<Arrival> {
+        let unsorted: Vec<bool> = windows.iter().map(|(w, _)| self.is_unsorted(w.wid)).collect();
         let new: Vec<WindowDesc> = windows
             .iter()
             .zip(&unsorted)
             .filter(|(_, unsorted)| **unsorted)
-            .map(|(window, _)| window.clone())
+            .map(|((window, _), _)| window.clone())
             .collect();
         let mut matches = self.rejoin_all(&new, MatchPass::Arrival).into_iter();
         let mut arrivals = Vec::with_capacity(windows.len());
-        for (window, unsorted) in windows.iter().zip(unsorted) {
+        for ((window, screen_active), unsorted) in windows.iter().zip(unsorted) {
             let arrival = if !unsorted {
                 Arrival::AlreadyMember
             } else {
                 let found = matches.next().unwrap_or_default();
                 if !found.is_empty() {
                     Arrival::Rejoined(found)
-                } else if let ContextKey::Named(id) = screen_active
+                } else if let ContextKey::Named(id) = *screen_active
                     && let Ok(context) = self.get_mut(id)
                 {
                     context.members.push(MemberRecord::for_window(window));
@@ -1230,7 +1226,7 @@ impl Contexts {
     /// [`Contexts::windows_appeared`] for one window.
     #[cfg(test)]
     pub fn window_appeared(&mut self, window: &WindowDesc, screen_active: ContextKey) -> Arrival {
-        self.windows_appeared(std::slice::from_ref(window), screen_active)
+        self.windows_appeared(&[(window.clone(), screen_active)])
             .pop()
             .expect("one arrival per window")
     }
@@ -4209,7 +4205,8 @@ mod tests {
         assert!(similar_titles(&other.title, &own.title));
         for windows in [[other.clone(), own.clone()], [own.clone(), other.clone()]] {
             let mut cx = cx.clone();
-            let arrivals = cx.windows_appeared(&windows, cx.active());
+            let batch: Vec<_> = windows.iter().cloned().map(|w| (w, cx.active())).collect();
+            let arrivals = cx.windows_appeared(&batch);
             assert_eq!(
                 by_window(&windows, arrivals),
                 vec![

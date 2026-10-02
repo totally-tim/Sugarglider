@@ -11,7 +11,7 @@ use super::{Command, ContextCommand, Reactor};
 use crate::actor::app::{WindowId, pid_t};
 use crate::actor::contexts_snapshot::{UNKNOWN_APP, app_name};
 use crate::actor::wm_controller::WmCommand;
-use crate::model::contexts::{Context, ContextKey};
+use crate::model::contexts::{Context, ContextKey, Scope};
 use crate::ui::context_switcher::{
     ContextPayload, EverythingPayload, MemberPayload, ShowPayload, UnsortedPayload, WindowPayload,
 };
@@ -42,28 +42,25 @@ impl Reactor {
     /// The payload of the switcher panel: the contexts, the windows on
     /// screen, and the target window.
     pub(super) fn switcher_payload(&self) -> ShowPayload {
-        let windows = self.switcher_windows();
+        let screen =
+            self.current_main_screen_index().unwrap_or_else(|| self.focused_screen_index());
+        let windows = self.switcher_windows(screen);
+        let active = self.screen_shown_key(screen);
         ShowPayload {
-            display_id: self
-                .main_window()
-                .and_then(|wid| self.layout_frame(wid))
-                .and_then(|frame| self.best_screen_idx_for_window(&frame))
-                .or_else(|| self.active_screen_idx.map(usize::from))
-                .or((!self.display_ids.is_empty()).then_some(0))
-                .and_then(|idx| self.display_ids.get(idx).copied()),
+            display_id: self.display_ids.get(screen).copied(),
             target_window: self.switcher_target_window(&windows),
             contexts: self
                 .contexts
                 .contexts()
                 .iter()
-                .map(|context| self.context_payload(context))
+                .map(|context| self.context_payload(context, active))
                 .collect(),
             unsorted: UnsortedPayload {
                 windows: self.unsorted_windows().len(),
-                active: self.contexts.active() == ContextKey::Unsorted,
+                active: active == ContextKey::Unsorted,
             },
             everything: EverythingPayload {
-                active: self.contexts.active() == ContextKey::Everything,
+                active: active == ContextKey::Everything,
                 hotkey: self.everything_hotkey(),
             },
             windows,
@@ -89,7 +86,7 @@ impl Reactor {
     /// and the window count follow R3: a pinned window is a member of every
     /// context. The records follow the model's order, pinned windows left
     /// out, as the edit view derives membership from them.
-    fn context_payload(&self, context: &Context) -> ContextPayload {
+    fn context_payload(&self, context: &Context, active: ContextKey) -> ContextPayload {
         let members: Vec<MemberPayload> = context
             .members
             .iter()
@@ -121,7 +118,7 @@ impl Reactor {
             name: context.name.clone(),
             number: context.number,
             hotkey: self.context_hotkey(ContextKey::Named(context.id)),
-            active: self.contexts.active() == ContextKey::Named(context.id),
+            active: active == ContextKey::Named(context.id),
             apps,
             windows: open.len(),
             members,
@@ -129,12 +126,19 @@ impl Reactor {
     }
 
     /// The windows the create and edit views list: the tracked windows that
-    /// show on the visible Spaces, one entry per native tab group, named by
-    /// its main tab (R36).
-    fn switcher_windows(&self) -> Vec<WindowPayload> {
+    /// show on the visible Spaces, restricted to the focused screen in
+    /// per-screen scope. Each native tab group has one entry, named by its
+    /// main tab (R36).
+    fn switcher_windows(&self, focused: usize) -> Vec<WindowPayload> {
         let mut seen: Vec<WindowId> = Vec::new();
         let mut windows = Vec::new();
         for wid in self.windows_on_visible_spaces(|wid| !self.parked.contains_key(&wid)) {
+            if self.scope() == Scope::PerScreen
+                && self.layout_frame(wid).and_then(|frame| self.best_screen_idx_for_window(&frame))
+                    != Some(focused)
+            {
+                continue;
+            }
             let main = self.membership_window(wid);
             if seen.contains(&main) {
                 continue;

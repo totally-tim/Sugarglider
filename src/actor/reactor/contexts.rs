@@ -22,6 +22,7 @@ use crate::model::contexts::{
 };
 use crate::sys::geometry::CGRectExt;
 use crate::sys::screen::{ScreenId, SpaceId};
+use crate::sys::window_server::WindowServerId;
 
 /// Why a context command does nothing while a quit waits for parked windows.
 const QUITTING: &str = "Sugarglider is quitting";
@@ -283,35 +284,40 @@ impl Reactor {
     }
 
     /// Shows each visible Space's context in the layout, and applies the
-    /// active context again when contexts are in use. Returns the layout's
-    /// response to the exposure for the caller to handle.
+    /// active context again when contexts are in use. Moves focus away from
+    /// a window the apply parks, using the event's visible window order to
+    /// avoid redundant raises.
     ///
     /// When the list of visible windows is incomplete, the Spaces only show
     /// their contexts, so that no window loses its tile.
-    pub(super) fn show_visible_spaces(&mut self) -> Option<EventResponse> {
+    pub(super) fn show_visible_spaces(&mut self, visible_window_order: Option<&[WindowServerId]>) {
         if self.contexts_in_use() && self.lists_known_windows() {
-            return self.apply(Apply::Again).ok().and_then(|(_, response)| response);
+            if let Ok((plan, response)) = self.apply(Apply::Again) {
+                let response = response.map(|response| match visible_window_order {
+                    Some(order) => self.filter_response(response, order),
+                    None => response,
+                });
+                self.finish_apply(plan, response);
+            }
+            return;
         }
         let spaces = self.shown_spaces(Apply::Again);
-        self.expose(&spaces)
+        if let Some(response) = self.expose(&spaces) {
+            let response = match visible_window_order {
+                Some(order) => self.filter_response(response, order),
+                None => response,
+            };
+            self.handle_layout_response(response);
+        }
     }
 
     /// Applies the context each visible Space shows again, as a switch does,
     /// and runs the switch's focus step when the apply parked the window that
     /// has the focus: its context's most recently focused member takes the
     /// focus, or Finder is activated, so that keystrokes don't go to a parked
-    /// window. The apply at `StartupComplete` and the one after a reload turns
-    /// contexts on use this; the other applies only expose the Spaces.
+    /// window. Used for applies that have no event snapshot of window order.
     pub(super) fn apply_again_focusing_parked_main(&mut self) {
-        if self.contexts_in_use() && self.lists_known_windows() {
-            if let Ok((plan, response)) = self.apply(Apply::Again) {
-                self.finish_apply(plan, response);
-            }
-            return;
-        }
-        if let Some(response) = self.show_visible_spaces() {
-            self.handle_layout_response(response);
-        }
+        self.show_visible_spaces(None);
     }
 
     /// Handles the layout's response to an apply. When the apply parked the
@@ -950,7 +956,7 @@ impl Reactor {
     /// Applies the active context after contexts were turned on, or shows
     /// every window after they were turned off. Contexts that were never
     /// read are read first.
-    pub(super) fn contexts_turned_on_or_off(&mut self) {
+    pub(super) fn contexts_turned_on_or_off(&mut self, previous_scope: Option<Scope>) {
         // Titles reach the window rules only while contexts are on, so that
         // with contexts off the rules see the same titles as before contexts
         // existed.
@@ -960,7 +966,7 @@ impl Reactor {
         if self.contexts_enabled() {
             info!("Contexts are on");
             if self.contexts_unread {
-                self.read_contexts_after_reload(SystemTime::now());
+                self.read_contexts_after_reload(SystemTime::now(), previous_scope);
             } else {
                 self.rejoin_every_window();
             }
@@ -983,7 +989,8 @@ impl Reactor {
         }
     }
 
-    /// Applies a change of scope (R11). Going from `global` to `per_screen`
+    /// Reconciles the active contexts after a change of scope (R11), even
+    /// while contexts are disabled. Going from `global` to `per_screen`
     /// gives every screen the global context. Going the other way makes the
     /// focused screen's context the global one, and the other screens follow
     /// it.
@@ -999,6 +1006,9 @@ impl Reactor {
                 self.contexts.set_screen_actives(screens, key);
             }
             (Scope::PerScreen, Scope::Global) => {
+                if !self.contexts.has_screen_actives() {
+                    return;
+                }
                 let screen = self.focused_screen_index();
                 let key = self
                     .screens
@@ -1011,9 +1021,6 @@ impl Reactor {
                 }
             }
             _ => return,
-        }
-        if self.contexts_in_use() {
-            self.apply_again_focusing_parked_main();
         }
         self.save_contexts();
     }
@@ -1179,8 +1186,11 @@ impl Reactor {
     /// Reads the contexts when a config reload turns contexts on, and records
     /// them: a replay has no `contexts.json` to read, so it applies the
     /// contexts from the recording.
-    fn read_contexts_after_reload(&mut self, now: SystemTime) {
+    fn read_contexts_after_reload(&mut self, now: SystemTime, previous_scope: Option<Scope>) {
         self.read_contexts(now);
+        if let Some(scope) = previous_scope {
+            self.scope_changed(scope);
+        }
         let event = Event::ContextsRead(Box::new(self.contexts.clone()));
         self.record.on_event(&event);
     }

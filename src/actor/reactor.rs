@@ -8,6 +8,8 @@
 //! changes by sending requests out to the other actors in the system.
 
 mod animation;
+#[cfg(test)]
+mod context_regressions;
 mod contexts;
 mod contexts_snapshot;
 mod create_context;
@@ -1392,18 +1394,9 @@ impl Reactor {
                 if self.screens.iter().all(|screen| screen.space.is_none()) {
                     self.hide_context_switcher();
                 }
-                let response = self.show_visible_spaces();
-                if let Some(response) = response {
-                    self.handle_layout_response_with_context(
-                        response,
-                        ResponseContext {
-                            visible_window_order: Some(visible_window_order),
-                            ..Default::default()
-                        },
-                    );
-                    for space in self.screens.iter().flat_map(|screen| screen.space) {
-                        self.layout.debug_tree_desc(space, "after event", false);
-                    }
+                self.show_visible_spaces(Some(&visible_window_order));
+                for space in self.screens.iter().flat_map(|screen| screen.space) {
+                    self.layout.debug_tree_desc(space, "after event", false);
                 }
                 _ = self.repark_moved_windows();
                 self.update_active_screen();
@@ -1443,18 +1436,9 @@ impl Reactor {
                 if self.screens.iter().all(|screen| screen.space.is_none()) {
                     self.hide_context_switcher();
                 }
-                let response = self.show_visible_spaces();
-                if let Some(response) = response {
-                    self.handle_layout_response_with_context(
-                        response,
-                        ResponseContext {
-                            visible_window_order: Some(visible_window_order),
-                            ..Default::default()
-                        },
-                    );
-                    for space in self.screens.iter().flat_map(|screen| screen.space) {
-                        self.layout.debug_tree_desc(space, "after event", false);
-                    }
+                self.show_visible_spaces(Some(&visible_window_order));
+                for space in self.screens.iter().flat_map(|screen| screen.space) {
+                    self.layout.debug_tree_desc(space, "after event", false);
                 }
                 if let Some(main_window) = self.main_window() {
                     let spaces = spaces.iter().copied().flatten().collect();
@@ -1814,12 +1798,15 @@ impl Reactor {
                 let scope = self.config.settings.experimental.contexts.scope;
                 self.layout.set_config(&config);
                 self.config = config;
-                if self.contexts_enabled() != contexts_were_enabled {
-                    self.contexts_turned_on_or_off();
-                } else if self.contexts_enabled()
-                    && self.config.settings.experimental.contexts.scope != scope
-                {
+                let scope_changed = self.scope() != scope;
+                let unread_scope_change = (scope_changed && self.contexts_unread).then_some(scope);
+                if scope_changed && !self.contexts_unread {
                     self.scope_changed(scope);
+                }
+                if self.contexts_enabled() != contexts_were_enabled {
+                    self.contexts_turned_on_or_off(unread_scope_change);
+                } else if self.contexts_enabled() && scope_changed {
+                    self.apply_again_focusing_parked_main();
                 }
             }
             Event::ContextsRead(contexts) => self.contexts_read(*contexts),

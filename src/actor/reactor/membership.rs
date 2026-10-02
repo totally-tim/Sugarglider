@@ -124,7 +124,7 @@ impl Reactor {
     fn windows_appeared(&mut self, windows: &[WindowDesc]) -> bool {
         let new: Vec<WindowId> = windows.iter().map(|window| window.wid).collect();
         let mut changed = false;
-        let mut by_context: Vec<(ContextKey, Vec<WindowDesc>)> = vec![];
+        let mut batch = Vec::new();
         for window in windows {
             let main_tab =
                 self.main_tab(window.wid).filter(|&main| !new.contains(&main)).or_else(|| {
@@ -136,17 +136,12 @@ impl Reactor {
                 continue;
             }
             let key = self.arrival_context(window.wid);
-            match by_context.iter_mut().find(|(other, _)| *other == key) {
-                Some((_, group)) => group.push(window.clone()),
-                None => by_context.push((key, vec![window.clone()])),
-            }
+            batch.push((window.clone(), key));
         }
-        for (key, group) in by_context {
-            let arrivals = self.contexts.windows_appeared(&group, key);
-            for (window, arrival) in group.iter().zip(arrivals) {
-                debug!(wid = ?window.wid, ?arrival, "A new window appeared");
-                changed |= matches!(arrival, Arrival::Rejoined(_) | Arrival::Joined(_));
-            }
+        let arrivals = self.contexts.windows_appeared(&batch);
+        for ((window, _), arrival) in batch.iter().zip(arrivals) {
+            debug!(wid = ?window.wid, ?arrival, "A new window appeared");
+            changed |= matches!(arrival, Arrival::Rejoined(_) | Arrival::Joined(_));
         }
         changed
     }
