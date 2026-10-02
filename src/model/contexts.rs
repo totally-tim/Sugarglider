@@ -615,12 +615,15 @@ impl Contexts {
     /// The context to switch to when the user focuses this window from
     /// outside the active context: the most recently used context that holds
     /// it, or Unsorted.
+    #[cfg(test)]
     pub fn focus_target(&self, wid: WindowId) -> ContextKey {
         self.focus_target_on(self.active, wid)
     }
 
-    /// [`Contexts::focus_target`] for a screen that shows `active`. In
-    /// `per_screen` scope each screen has its own active context (R8, R26).
+    /// The context to switch to when the user focuses this window from
+    /// outside `active`: `active` when it holds the window, else the most
+    /// recently used context that holds it, or Unsorted. In `per_screen`
+    /// scope each screen has its own active context (R8, R26).
     pub fn focus_target_on(&self, active: ContextKey, wid: WindowId) -> ContextKey {
         if self.is_member(active, wid) {
             return active;
@@ -1060,6 +1063,7 @@ pub fn match_windows(
 }
 
 /// [`match_windows`] for one window.
+#[cfg(test)]
 pub fn match_window(window: &WindowDesc, contexts: &Contexts, pass: MatchPass) -> Vec<RecordMatch> {
     match_windows(std::slice::from_ref(window), contexts, pass)
         .pop()
@@ -1168,6 +1172,7 @@ impl Contexts {
     }
 
     /// [`Contexts::rejoin_all`] for one window.
+    #[cfg(test)]
     pub fn rejoin(&mut self, window: &WindowDesc, pass: MatchPass) -> Vec<RecordMatch> {
         self.rejoin_all(std::slice::from_ref(window), pass).pop().unwrap_or_default()
     }
@@ -1223,6 +1228,7 @@ impl Contexts {
     }
 
     /// [`Contexts::windows_appeared`] for one window.
+    #[cfg(test)]
     pub fn window_appeared(&mut self, window: &WindowDesc, screen_active: ContextKey) -> Arrival {
         self.windows_appeared(std::slice::from_ref(window), screen_active)
             .pop()
