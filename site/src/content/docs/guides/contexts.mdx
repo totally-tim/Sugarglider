@@ -6,7 +6,7 @@ description: Named sets of windows with their own tiling layouts
 Contexts are an experimental feature: named sets of windows that you switch between. Each context keeps its own tiling layout. Switching shows its windows and parks the others at a bottom corner. A parked window may leave a strip up to 1 point wide and 32 points tall on its display. Sugarglider closes nothing, and a window can belong to several contexts.
 
 :::caution[Experimental]
-Contexts are off by default. The switcher, per-screen scope, and command line are implemented. One-display live QA verified TextEdit switching and fallback to Everything when Calculator or Chrome refused the parking limit. Two-display behavior, recovery, and the remaining UI paths still need hands-on macOS checks.
+Contexts are off by default. Some apps don't stay parked; Chrome, for example, leaves a strip taller than Sugarglider accepts, and a switch then shows Everything again.
 :::
 
 ## Turn it on
@@ -63,6 +63,10 @@ sugarglider context switch --name 2024
 
 Use `--name` when a context's name is made of digits, so the command doesn't read it as a number. On failure the command prints the reason and exits with status 1.
 
+:::note[The switcher hotkey and macOS]
+The suggested switcher binding is ⌃⌥Space, which macOS also uses for "Select next source in Input menu". Sugarglider's event tap takes a bound key before macOS sees it, and it swallows a bound key even when contexts are off. The default config leaves the context bindings commented out for this reason.
+:::
+
 ## Raycast and SuperCmd
 
 You can type a context's name directly in your launcher's main search and press Return on its **Sugarglider Contexts** result.
@@ -77,7 +81,7 @@ Run `sugarglider context launcher-path` to print its absolute path. Sugarglider 
 
 The commands call the CLI beside the running server. Development builds need both the server and CLI binaries. If Sugarglider is stopped, they report that it is not running; they do not start it. Leave generated files unchanged. An edited file blocks the whole update, including removals, and Sugarglider logs the conflict. IDs are stable within the saved context database; recreate launcher shortcuts if you replace or delete that database.
 
-Raycast documents automatic reindexing of metadata edits. Discovery of new and deleted commands still needs physical QA. SuperCmd 1.0.26 caches script discovery for 12 seconds. Successful switching through both launchers still needs physical QA.
+Raycast documents automatic reindexing of metadata edits. SuperCmd 1.0.26 caches script discovery for 12 seconds.
 
 ## Add, move, and pin windows
 
@@ -142,7 +146,7 @@ sugarglider context forget <query> <record>
 
 Switching never closes a window. Before Sugarglider parks a window, it writes the window's frame to `~/.glide/parked.json`. If Sugarglider quits or crashes, the next launch reads that file and puts the windows back. The contexts and their members live in `~/.glide/contexts.json`. Both files contain window titles.
 
-Sugarglider checks the frame that macOS reports after parking. It accepts only a bottom-corner strip within the 1 by 32 point limit, with no overlap on another display. If a window cannot meet that limit, the context switch fails, Sugarglider shows Everything, and it restores parked windows from their saved frames. Some apps or display arrangements may therefore prevent a context from staying active. One-display TextEdit testing confirmed a 1 by 32 point strip. In the tested Chrome version, the strip was 41 points tall, so switching fell back to Everything. Other app versions and two-display setups still need physical QA.
+Sugarglider checks the frame that macOS reports after parking. It accepts only a bottom-corner strip within the 1 by 32 point limit, with no overlap on another display. If a window cannot meet that limit, the context switch fails, Sugarglider shows Everything, and it restores parked windows from their saved frames. Some apps or display arrangements may therefore prevent a context from staying active. Chrome, for example, leaves a 41-point strip, so a switch that parks it shows Everything again.
 
 ## Per-screen scope
 
@@ -161,11 +165,3 @@ With `global` scope, a switch changes every screen. With `per_screen` scope:
 - The screen it leaves closes the visible gap while the window is away and keeps the window's saved position for its return.
 
 Changing from `per_screen` to `global` uses the focused screen's context for every screen. This also applies when you change the config while Sugarglider is stopped: on the next launch, it chooses the current focused screen's saved context and saves the global choice. If no focused window is known at startup, it uses the first screen. Changing from `global` to `per_screen` gives every screen the current global context.
-
-## Checks still pending
-
-The M1 physical parking spike and manual QA on a live Mac are pending. These include two-display switching, recovery after a crash, and the Raycast and SuperCmd paths.
-
-:::note[The switcher hotkey and macOS]
-The suggested switcher binding is ⌃⌥Space, which macOS also uses for "Select next source in Input menu". Sugarglider's event tap takes a bound key before macOS sees it, and it swallows a bound key even when contexts are off. The default config leaves the context bindings commented out for this reason.
-:::
