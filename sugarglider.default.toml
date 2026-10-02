@@ -271,7 +271,7 @@ scroll.infinite_loop = false
 # Aspect ratio for single-column mode (e.g. "16:9"). Empty string disables.
 scroll.single_column_aspect_ratio = ""
 
-# Named window sets you switch between. See docs/specs/contexts.md.
+# Named window sets you switch between. See the Contexts guide.
 contexts.enable = false
 
 # "global": a switch changes every screen. "per_screen": only the focused

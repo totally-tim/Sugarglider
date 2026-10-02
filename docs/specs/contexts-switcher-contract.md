@@ -1,4 +1,4 @@
-# Switcher JSON contract (M8)
+# Switcher JSON contract
 
 This is the contract between the context switcher panel (Swift, `SugargliderUI`) and Rust. The Swift half implements it in `SugargliderUI/Sources/SugargliderUI/ContextSwitcherContract.swift`. The doc comment on `ContextSwitcherJSON` there summarizes it and repeats the examples. The examples below are also the test fixtures in `SugargliderUI/Tests/SugargliderUITests/ContractFixtures.swift`, so the Swift tests decode and re-encode exactly these literals. A test checks that the three copies of the examples are the same.
 

@@ -4269,7 +4269,7 @@ mod tests {
         assert_eq!(ids_of(cx.pinned()), vec![live.window_server_id]);
     }
 
-    /// R23, Q4: ⌘Q where every window closes before the app terminates. The
+    /// R23: ⌘Q where every window closes before the app terminates. The
     /// records stay with their last titles and rejoin after a relaunch.
     #[test]
     fn r23_quit_with_windows_closed_before_termination() {
@@ -4312,7 +4312,7 @@ mod tests {
         );
     }
 
-    /// R23, Q4: ⌘Q where the app terminates before its windows report
+    /// R23: ⌘Q where the app terminates before its windows report
     /// closed. The late closes change nothing.
     #[test]
     fn r23_quit_with_windows_closed_after_termination() {
@@ -4336,7 +4336,7 @@ mod tests {
         );
     }
 
-    /// R23, Q4: ⌘Q where one window closes before the app terminates and
+    /// R23: ⌘Q where one window closes before the app terminates and
     /// the other after.
     #[test]
     fn r23_quit_with_one_window_closed_before_and_one_after_termination() {
@@ -4355,10 +4355,9 @@ mod tests {
         );
     }
 
-    /// R23, Q4: a window-server update that lists the app's remaining window
+    /// R23: a window-server update that lists the app's remaining window
     /// between the first close and termination shows the app is still
-    /// running, so the first window's records go. Q4 asks whether macOS
-    /// sends such an update during ⌘Q.
+    /// running, so the first window's records go.
     #[test]
     fn r23_quit_with_an_update_listing_a_remaining_window_before_termination() {
         let mut cx = Contexts::new();

@@ -613,7 +613,7 @@ fn r39_a_parked_window_that_its_app_moves_back_is_parked_again_at_once() {
     assert_eq!(vec![(wid(1), screen())], s.tiles());
 }
 
-/// R39, Q1. An app that moves its parked window back after every write is
+/// R39. An app that moves its parked window back after every write is
 /// parked again at most five times. A sixth movement ends the context.
 #[test]
 fn r39_an_app_that_keeps_moving_its_parked_window_back_is_parked_five_times() {

@@ -463,7 +463,7 @@ fn r23_every_order_of_a_quit_keeps_the_records_of_every_window() {
     }
 }
 
-/// R23, Q4. A window server list inside the quit gap is no longer a signal
+/// R23. A window server list inside the quit gap is no longer a signal
 /// that the app still runs, so the records of a window that closed stay
 /// pending whatever the list names, and stay when the app terminates.
 #[test]
@@ -763,7 +763,7 @@ fn r39_r14_own_untracked_and_pinned_windows_that_become_visible_are_not_parked()
     assert_eq!(thirds, s.frames(&[wid(1), wid(2), wid(3)]));
 }
 
-/// R39, Q1. Five movements each get one repark. On the sixth, the context
+/// R39. Five movements each get one repark. On the sixth, the context
 /// ends and the original frame remains available for restoration.
 #[test]
 fn r39_an_app_that_keeps_moving_its_parked_window_back_gets_at_most_one_write_per_move() {
@@ -793,7 +793,7 @@ fn r39_an_app_that_keeps_moving_its_parked_window_back_gets_at_most_one_write_pe
     answer(&mut s, restores);
 }
 
-/// R39, Q1. A refused routine repark ends the context and restores windows.
+/// R39. A refused routine repark ends the context and restores windows.
 /// The requested echo starts no new parking write.
 #[test]
 fn r39_a_refused_repark_aborts_without_a_write_loop() {
