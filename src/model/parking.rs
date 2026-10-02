@@ -37,8 +37,12 @@ pub fn bounded_bottom_corner(
     })
 }
 
+/// The tallest strip a parked window may leave on its display.
+pub const MAX_STRIP_HEIGHT: f64 = 64.0;
+
 /// Accepts an AX readback only when it leaves a strip no wider than one
-/// point and no taller than 32 points at the selected bottom corner.
+/// point and no taller than [`MAX_STRIP_HEIGHT`] points at the selected
+/// bottom corner.
 pub fn accepted_bottom_strip(
     observed: CGRect,
     requested_size: CGSize,
@@ -57,7 +61,7 @@ pub fn accepted_bottom_strip(
     strip.size.width > 0.0
         && strip.size.width <= 1.0
         && strip.size.height > 0.0
-        && strip.size.height <= 32.0
+        && strip.size.height <= MAX_STRIP_HEIGHT
         && strip.max().y == bounds.max().y
         && touches_side
         && others.iter().all(|other| other.intersection(&observed).area() == 0.0)
@@ -97,16 +101,22 @@ mod tests {
             &[],
             BottomCorner::Right
         ));
-        assert!(accepted_bottom_strip(
+        for accepted in [
             rect(1511., 951., 586., 488.),
-            size,
-            bounds,
-            &[],
-            BottomCorner::Right
-        ));
+            rect(1511., 941., 586., 488.),
+            rect(1511., 918., 586., 488.),
+        ] {
+            assert!(accepted_bottom_strip(
+                accepted,
+                size,
+                bounds,
+                &[],
+                BottomCorner::Right
+            ));
+        }
         for rejected in [
             rect(1510., 950., 586., 488.),
-            rect(1511., 949., 586., 488.),
+            rect(1511., 917., 586., 488.),
             rect(1511., 33., 586., 488.),
             rect(1511., 950., 587., 488.),
         ] {

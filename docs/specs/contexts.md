@@ -60,7 +60,7 @@ And after testing on a live Mac:
 
 - Native window tabs require explicit Accessibility object identities. Equal frames or titles are not evidence of a tab group.
 - Sugarglider identifies each tab's window when the user selects it. It does not select tabs automatically. Until every tab is identified, it shows Everything and explains that the user must select each tab before switching contexts.
-- The production parking limit is 32 points. Chrome leaves a 41-point strip, so a switch that parks Chrome shows Everything again.
+- The production parking limit is a strip at most 1 point wide and 64 points tall. TextEdit leaves 32 points and Chrome 41.
 
 And for launchers:
 
@@ -74,7 +74,7 @@ And for launchers:
 - **Active context**: the context a screen shows. In `global` scope, all screens share one active context.
 - **Everything**: a built-in view that shows every window in the Space's normal layout, the layout Sugarglider uses today. You can't add windows to it.
 - **Unsorted**: a built-in context. Its members are the windows that belong to no named context.
-- **Park a window**: move a window to a bottom corner so that no more than a 1 by 32 point strip stays on its display. Sugarglider parks every window that must not show.
+- **Park a window**: move a window to a bottom corner so that no more than a 1 by 64 point strip stays on its display. Sugarglider parks every window that must not show.
 - **Journal**: the file `~/.glide/parked.json`. Sugarglider writes each window there before it parks it.
 - **Pinned window**: a window that is a member of every context.
 
@@ -473,11 +473,11 @@ Facts from the current code:
 
 Design:
 
-- **H1.** Production parking chooses the first clear bottom corner of the window's display, right then left, using the display's full bounds (`bounded_bottom_corner`). The requested frame leaves one point on that display and has no overlap with any other display's full bounds. The app actor reads the frame back from AX after the write. The reactor accepts that readback only for the current window-server ID and transaction, with the same window size within `SameAs` tolerance, no overlap with another display, and a strip touching the selected bottom corner that is wider than zero and at most 1 point wide and 32 points tall (`accepted_bottom_strip`). A top corner, an overlapping display, an unconfirmed write, or a wider strip fails. The context returns to Everything and the original journal frame remains available for restoration.
+- **H1.** Production parking chooses the first clear bottom corner of the window's display, right then left, using the display's full bounds (`bounded_bottom_corner`). The requested frame leaves one point on that display and has no overlap with any other display's full bounds. The app actor reads the frame back from AX after the write. The reactor accepts that readback only for the current window-server ID and transaction, with the same window size within `SameAs` tolerance, no overlap with another display, and a strip touching the selected bottom corner that is wider than zero and at most 1 point wide and 64 points tall (`accepted_bottom_strip`). A top corner, an overlapping display, an unconfirmed write, or a wider strip fails. The context returns to Everything and the original journal frame remains available for restoration.
 - **H2.** The reactor keeps each parked window's original frame, selected screen and corner, current window-server ID, observed frame, and awaited write. A parked window's Space is the Space of its original frame, not of the corner it sits in. One predicate, `reaches_layout(space, wid)`, decides whether a window may reach the layout: it rejects parked windows and inactive native tabs, whatever their geometry says, and applies L4's member filter. Every path that sends a layout event for a window applies it: `WindowBecameVisible` (which sends `WindowAdded`), frame changes, `MouseMovedOverWindow`, and `send_visible_windows_to_layout` (the window-server snapshot). A frame change of a parked window stays out of the layout; it updates the observed frame and can trigger a repark. An accepted bottom strip needs no repark. Before a batch repark, the reactor checks every target, retry cap, and journal entry. If one fails, it writes no new journal entries or repark frames and restores Everything. A refused readback also restores Everything (R39).
 - **H3.** Putting a member back needs no special request. The reconcile (L8) gives the member a node in the active layout, so `update_layout` writes its frame. The reactor clears the member's parked state before that write, and R31 removes the journal entry when the echo confirms the frame. A member the layout doesn't place, a floating member or one with no node, has no tile to return to, so the reactor puts it back at its frame from before parking through `pending_frame_overrides`. Showing Everything puts non-members back at their journal frames (R27).
 - **H4.** Park and unpark writes go through the reactor's frame bookkeeping. Each write takes a new transaction id (`WindowState::next_txid`), so the reactor ignores stale frame reads from before it. Parking sets `frame_monotonic` to the parked frame, so `update_layout` doesn't skip the unpark write as unchanged. Parking and unparking both clear the window's `frame_attempts` entry, so quick switches never reach `MAX_FRAME_ATTEMPTS`.
-- **H5.** Parked windows retain their actual accepted AX frame, which may be a bottom strip up to 1 by 32 points. Parking geometry never changes native tab membership. Only explicit tab identities establish a group, and the switch writes only its selected window.
+- **H5.** Parked windows retain their actual accepted AX frame, which may be a bottom strip up to 1 by 64 points. Parking geometry never changes native tab membership. Only explicit tab identities establish a group, and the switch writes only its selected window.
 
 A switch writes one frame per window that it parks or puts back.
 
@@ -603,7 +603,7 @@ Model tests:
 
 Parking and journal tests:
 
-- The production selector uses full display bounds, chooses only a clear bottom corner, and rejects a readback beyond the 1 by 32 point bound or on another display (H1). Repark preflights the whole batch before changing any journal entry.
+- The production selector uses full display bounds, chooses only a clear bottom corner, and rejects a readback beyond the 1 by 64 point bound or on another display (H1). Repark preflights the whole batch before changing any journal entry.
 - Park and unpark writes take a new transaction id, update `frame_monotonic`, and clear `frame_attempts` (H4).
 - Two parked windows of one app with the same size. One of them closes, and its nodes are removed (H5).
 - A failed journal write parks nothing (R30).

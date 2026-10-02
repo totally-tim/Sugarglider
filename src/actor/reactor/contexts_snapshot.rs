@@ -767,7 +767,7 @@ mod tests {
     }
 
     #[test]
-    fn a_33_point_bottom_strip_aborts_and_keeps_the_restore_frame() {
+    fn a_65_point_bottom_strip_aborts_and_keeps_the_restore_frame() {
         let visible = rect(0., 33., 1512., 949.);
         let before = rect(305., 367., 586., 488.);
         let mut s = Setup::on(vec![visible], vec![Some(space())]);
@@ -782,7 +782,7 @@ mod tests {
 
         s.reactor.handle_event(Event::WindowFrameChanged(
             wid(1),
-            rect(1511., 949., 586., 488.),
+            rect(1511., 917., 586., 488.),
             txid,
             Requested(true),
             None,

@@ -3,10 +3,10 @@ title: Contexts (experimental)
 description: Named sets of windows with their own tiling layouts
 ---
 
-Contexts are an experimental feature: named sets of windows that you switch between. Each context keeps its own tiling layout. Switching shows its windows and parks the others at a bottom corner. A parked window may leave a strip up to 1 point wide and 32 points tall on its display. Sugarglider closes nothing, and a window can belong to several contexts.
+Contexts are an experimental feature: named sets of windows that you switch between. Each context keeps its own tiling layout. Switching shows its windows and parks the others at a bottom corner. A parked window may leave a strip up to 1 point wide and 64 points tall on its display. Sugarglider closes nothing, and a window can belong to several contexts.
 
 :::caution[Experimental]
-Contexts are off by default. Some apps don't stay parked; Chrome, for example, leaves a strip taller than Sugarglider accepts, and a switch then shows Everything again.
+Contexts are off by default. If an app moves its parked window back further than Sugarglider accepts, a switch shows Everything again.
 :::
 
 ## Turn it on
@@ -146,7 +146,7 @@ sugarglider context forget <query> <record>
 
 Switching never closes a window. Before Sugarglider parks a window, it writes the window's frame to `~/.glide/parked.json`. If Sugarglider quits or crashes, the next launch reads that file and puts the windows back. The contexts and their members live in `~/.glide/contexts.json`. Both files contain window titles.
 
-Sugarglider checks the frame that macOS reports after parking. It accepts only a bottom-corner strip within the 1 by 32 point limit, with no overlap on another display. If a window cannot meet that limit, the context switch fails, Sugarglider shows Everything, and it restores parked windows from their saved frames. Some apps or display arrangements may therefore prevent a context from staying active. Chrome, for example, leaves a 41-point strip, so a switch that parks it shows Everything again.
+Sugarglider checks the frame that macOS reports after parking. It accepts only a bottom-corner strip within the 1 by 64 point limit, with no overlap on another display. If a window cannot meet that limit, the context switch fails, Sugarglider shows Everything, and it restores parked windows from their saved frames. Some apps or display arrangements may therefore prevent a context from staying active.
 
 ## Per-screen scope
 

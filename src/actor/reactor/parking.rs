@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 //! Parking hides a window at a bottom corner of its screen, leaving no more
-//! than a 1-by-32-point strip on that display.
+//! than a 1-by-64-point strip on that display.
 
 use std::io;
 use std::time::{Duration, Instant};
