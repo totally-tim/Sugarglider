@@ -129,8 +129,13 @@ pub fn hide_context_switcher() {
 
 /// Returns ranked contexts from the last published snapshot. No actor reply
 /// is needed while the panel waits on the main thread.
+///
+/// # Safety
+///
+/// `query` must be null or a valid NUL-terminated C string that stays alive
+/// for the call.
 #[unsafe(no_mangle)]
-pub extern "C" fn sugarglider_rank_contexts(query: *const c_char) -> *mut c_char {
+pub unsafe extern "C" fn sugarglider_rank_contexts(query: *const c_char) -> *mut c_char {
     if query.is_null() {
         return std::ptr::null_mut();
     }
@@ -150,8 +155,13 @@ pub extern "C" fn sugarglider_rank_contexts(query: *const c_char) -> *mut c_char
 
 /// Checks the command against the published snapshot and queues it without
 /// waiting for the reactor or WmController to execute it.
+///
+/// # Safety
+///
+/// `json` must be null or a valid NUL-terminated C string that stays alive for
+/// the call.
 #[unsafe(no_mangle)]
-pub extern "C" fn sugarglider_run_context_command(json: *const c_char) -> *mut c_char {
+pub unsafe extern "C" fn sugarglider_run_context_command(json: *const c_char) -> *mut c_char {
     if json.is_null() {
         return error_string("Null command pointer");
     }
@@ -460,8 +470,13 @@ pub extern "C" fn sugarglider_get_config() -> *mut c_char {
 /// Takes a JSON string representing the preferences. Returns null on success,
 /// or a pointer to an error message string on failure. The caller must free
 /// any returned error string using `sugarglider_free_string`.
+///
+/// # Safety
+///
+/// `json_ptr` must be null or a valid NUL-terminated C string that stays alive
+/// for the call.
 #[unsafe(no_mangle)]
-pub extern "C" fn sugarglider_update_config(json_ptr: *const c_char) -> *mut c_char {
+pub unsafe extern "C" fn sugarglider_update_config(json_ptr: *const c_char) -> *mut c_char {
     if json_ptr.is_null() {
         return error_string("Null JSON pointer");
     }
@@ -503,8 +518,13 @@ pub extern "C" fn sugarglider_update_config(json_ptr: *const c_char) -> *mut c_c
 ///
 /// Takes a JSON string representing the preferences. Returns null on success,
 /// or a pointer to an error message string on failure.
+///
+/// # Safety
+///
+/// `json_ptr` must be null or a valid NUL-terminated C string that stays alive
+/// for the call.
 #[unsafe(no_mangle)]
-pub extern "C" fn sugarglider_save_config_to_file(json_ptr: *const c_char) -> *mut c_char {
+pub unsafe extern "C" fn sugarglider_save_config_to_file(json_ptr: *const c_char) -> *mut c_char {
     if json_ptr.is_null() {
         return error_string("Null JSON pointer");
     }
@@ -529,8 +549,13 @@ pub extern "C" fn sugarglider_save_config_to_file(json_ptr: *const c_char) -> *m
 }
 
 /// Free a string returned by other FFI functions.
+///
+/// # Safety
+///
+/// `ptr` must be null or a pointer returned by one of these functions that has
+/// not been freed yet.
 #[unsafe(no_mangle)]
-pub extern "C" fn sugarglider_free_string(ptr: *mut c_char) {
+pub unsafe extern "C" fn sugarglider_free_string(ptr: *mut c_char) {
     if !ptr.is_null() {
         unsafe {
             drop(CString::from_raw(ptr));

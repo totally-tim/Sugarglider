@@ -266,6 +266,7 @@ pub fn make_key_window(pid: pid_t, wsid: WindowServerId) -> Result<(), ()> {
 /// `make_key_window` does the same with a window. `NSRunningApplication`'s
 /// activation is a request that the system can refuse under cooperative
 /// activation; this one is not.
+#[allow(clippy::result_unit_err)]
 pub fn make_front_process(pid: pid_t) -> Result<(), ()> {
     // See https://github.com/Hammerspoon/hammerspoon/issues/370#issuecomment-545545468.
     #[allow(non_upper_case_globals)]

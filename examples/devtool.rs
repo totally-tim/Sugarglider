@@ -389,11 +389,10 @@ fn find_window(
     let windows = app.windows()?;
     let window = windows
         .iter()
-        .filter(|w| {
+        .find(|w| {
             let id: Result<window_server::WindowServerId, _> = (&**w).try_into();
             id.is_ok_and(|id| id.as_u32() == window_server_id)
         })
-        .next()
         .context("Could not find matching window")?;
     Ok(window.clone())
 }
@@ -821,18 +820,13 @@ async fn get_windows_with_ax(opt: &Opt, serial: bool, print: bool) {
                 println!("{diagnostic}");
             }
         }
-        match windows {
-            Ok(windows) => {
-                if print {
-                    for (win, dbg) in windows {
-                        println!("{win:?} from {}", info.bundle_id.as_deref().unwrap_or("?"));
-                        if opt.verbose {
-                            println!("=> {dbg}");
-                        }
-                    }
+        if print && let Ok(windows) = windows {
+            for (win, dbg) in windows {
+                println!("{win:?} from {}", info.bundle_id.as_deref().unwrap_or("?"));
+                if opt.verbose {
+                    println!("=> {dbg}");
                 }
             }
-            Err(_) => (), //println!("  * Error reading windows: {err:?}"),
         }
     }
 }
