@@ -354,8 +354,6 @@ The worker keeps an ownership manifest, checks the whole batch before changing f
 
 [Raycast documents script indexing and automatic metadata refresh](https://manual.raycast.com/script-commands). The installed SuperCmd 1.0.26 parser reads the same metadata, imports script-command folders, and caches discovery for 12 seconds. The installed parser and runner passed an isolated generated-command probe; visible main-search behavior and successful live switches remain unverified. Raycast is not installed on the QA laptop.
 
-The optional `contrib/raycast/switch-context.sh` accepts a typed query as a launcher fallback command. A separate extension with a context list and management actions remains a later item; direct main-search switching uses the generated commands.
-
 ### Preferences
 
 The Preferences window has a "Contexts (experimental)" switch and a scope picker. The picker sends `contextsScope` through `PreferencesJson`; `write_preferences_to_file` (`src/config.rs`) writes it as `settings.experimental.contexts.scope`. An older payload without `contextsScope` preserves the configured scope.
@@ -694,7 +692,7 @@ M2 through M10 are integrated in this working branch. A person still needs to ru
 
 ### M6. Full command line and Raycast
 
-- The other `sugarglider context` subcommands and `contrib/raycast/switch-context.sh`.
+- The other `sugarglider context` subcommands.
 - `context forget <query> <record>` removes a gone window's member record from a named context. The record index comes from `context list --json` (`Contexts::remove_record`, R23).
 
 ### M7. Menu bar

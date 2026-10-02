@@ -1647,37 +1647,6 @@ mod tests {
         assert_eq!((0, "Unsorted\n", ""), (ran.status, &*ran.out, &*ran.err));
     }
 
-    /// The Raycast script exactly as the spec ships it.
-    const SHIPPED_SCRIPT: &str = "\
-#!/bin/bash
-# @raycast.schemaVersion 1
-# @raycast.title Switch Context
-# @raycast.mode compact
-# @raycast.packageName Sugarglider
-# @raycast.argument1 { \"type\": \"text\", \"placeholder\": \"Context\" }
-set -euo pipefail
-/usr/local/bin/sugarglider context switch \"$1\" 2>&1
-";
-
-    /// The Raycast script command is the one the spec ships, is executable, and
-    /// is a valid bash script.
-    #[test]
-    fn the_switch_context_script_is_the_shipped_one_and_valid_bash() {
-        use std::fs;
-        use std::os::unix::fs::PermissionsExt;
-        use std::process::Command;
-
-        let script = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("contrib/raycast/switch-context.sh");
-
-        assert_eq!(SHIPPED_SCRIPT, fs::read_to_string(&script).unwrap());
-        let mode = fs::metadata(&script).unwrap().permissions().mode();
-        assert_ne!(0, mode & 0o111, "{} is not executable", script.display());
-
-        let status = Command::new("bash").arg("-n").arg(&script).status().unwrap();
-        assert!(status.success(), "bash -n failed for {}", script.display());
-    }
-
     /// A query is sent as it was typed: a number from 1 to 9, with or
     /// without spaces and leading zeros, or any other text as a name.
     #[test]
