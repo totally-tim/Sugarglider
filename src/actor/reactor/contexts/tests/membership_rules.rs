@@ -1,7 +1,7 @@
 // Copyright The Glide Authors
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! Reactor tests for the membership rules of M5b, taken from the spec: windows
+//! Reactor tests for the membership rules of the spec: windows
 //! that appear during a switch or before startup completes, relaunches whose
 //! windows arrive together, every order of a quit, windows that come back,
 //! pinning, title changes, the membership commands on windows and targets

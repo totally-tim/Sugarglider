@@ -3059,7 +3059,7 @@ mod tests {
         assert_eq!(cx.active(), ContextKey::Everything);
     }
 
-    /// M9, R8. `contexts.json` holds each screen's active context next to
+    /// R8. `contexts.json` holds each screen's active context next to
     /// the global one, and a restart restores them. A screen with no entry
     /// shows Everything.
     #[test]
@@ -3091,7 +3091,7 @@ mod tests {
         );
     }
 
-    /// M9, R8. A screen's saved context that no longer exists, and a saved
+    /// R8. A screen's saved context that no longer exists, and a saved
     /// value of another shape, load as Everything. Built-ins load as
     /// themselves.
     #[test]

@@ -1,7 +1,7 @@
 // Copyright The Glide Authors
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! Reactor tests for the switcher's commands (M8): the ones that carry the
+//! Reactor tests for the switcher's commands: the ones that carry the
 //! window they act on, create a context from a window list, edit a context's
 //! members, rename it, number it, and delete it. The JSON contract they come
 //! from is `docs/specs/contexts-switcher-contract.md`.
@@ -79,7 +79,7 @@ fn empty_record(s: &mut Setup, key: ContextKey, app: i32, title: &str) {
     s.reactor.contexts.app_terminated(gone.pid);
 }
 
-/// M8, R37. The switcher's add and move carry the target window, which is
+/// R37. The switcher's add and move carry the target window, which is
 /// not the window that has focus when they arrive: the panel has key focus
 /// while it is open. A command with no window still acts on the focused one,
 /// which is what a key binding uses.
@@ -131,7 +131,7 @@ fn the_switchers_window_commands_act_on_the_window_they_carry() {
     assert!(!s.reactor.contexts.is_member(c, wid(1)));
 }
 
-/// M8, R36, R3. The switcher's create makes a context whose members are
+/// R36, R3. The switcher's create makes a context whose members are
 /// exactly the windows it lists: a window resolves to its native tab group,
 /// and a pinned window gets no record, because it is a member of every
 /// context already.
@@ -180,7 +180,7 @@ fn the_switchers_create_makes_a_context_from_the_windows_it_carries() {
     assert_eq!(vec!["Window1", "Window3"], saved);
 }
 
-/// M8, R37, R23. The switcher's edit removes a gone record, removes a window
+/// R37, R23. The switcher's edit removes a gone record, removes a window
 /// at once, and adds a window for the next switch.
 #[test]
 fn the_switchers_edit_changes_a_contexts_members_in_order() {
@@ -227,7 +227,7 @@ fn the_switchers_edit_changes_a_contexts_members_in_order() {
     assert!(s.reactor.contexts.is_unsorted(wid(2)));
 }
 
-/// M8, R4, R5, R6. The switcher's rename, set_number, and delete follow the
+/// R4, R5, R6. The switcher's rename, set_number, and delete follow the
 /// model's rules, and a name that is taken is refused with the model's
 /// message.
 #[test]

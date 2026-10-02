@@ -235,7 +235,7 @@ pub(super) mod tests {
         }
     }
 
-    /// M5c. The members are the windows that show on the visible Spaces.
+    /// The members are the windows that show on the visible Spaces.
     /// Sugarglider's own window, a panel the layout leaves alone, a
     /// minimized window, and a window on a screen whose Space is off stay
     /// out.
@@ -291,7 +291,7 @@ pub(super) mod tests {
         assert!(s.parked().is_empty());
     }
 
-    /// M5c, L3. Under a context, the new context takes the windows that
+    /// L3. Under a context, the new context takes the windows that
     /// show. A parked window stays parked and out, and a pinned window gets
     /// no record (R3). The windows keep their frames.
     #[test]
@@ -394,7 +394,7 @@ pub(super) mod tests {
         answer_context_request(ContextRequest::Result(RequestId(request)), snapshot).0
     }
 
-    /// M5c, I3. `sugarglider context create Work` followed at once by
+    /// I3. `sugarglider context create Work` followed at once by
     /// `sugarglider context switch Work`, while "Workshop" exists. The server
     /// answers both from a snapshot that doesn't have Work yet, where "Work"
     /// starts Workshop's name. It sends both commands as they were written,
@@ -483,7 +483,7 @@ pub(super) mod tests {
         s.apps.simulate_until_quiet(&mut s.reactor);
     }
 
-    /// M5c, L7. A window the user floats and a window that floats by default
+    /// L7. A window the user floats and a window that floats by default
     /// are tracked windows on screen, so the new context holds them. They
     /// stay where they float, and the tiles don't change.
     #[test]
@@ -523,7 +523,7 @@ pub(super) mod tests {
         assert!(s.parked().is_empty());
     }
 
-    /// M5c, R1. Under Everything, the new context takes every window on
+    /// R1. Under Everything, the new context takes every window on
     /// screen, also the windows that are in other contexts, and those
     /// contexts keep them. The window of an app the user hid is not on
     /// screen and stays out.
@@ -584,7 +584,7 @@ pub(super) mod tests {
         assert_eq!(frames, s.frames(&shown));
     }
 
-    /// M5c, R7, L3. In global scope the new context takes the windows on
+    /// R7, L3. In global scope the new context takes the windows on
     /// every visible Space, and each Space keeps its arrangement.
     #[test]
     fn a_new_context_takes_the_windows_on_both_displays() {
@@ -613,7 +613,7 @@ pub(super) mod tests {
         assert_eq!(vec![frames[1]], tiles(&s, space2, right));
     }
 
-    /// M5c. With no window on screen, the new context has no members, and
+    /// With no window on screen, the new context has no members, and
     /// it still becomes active and is saved.
     #[test]
     fn a_new_context_with_no_window_on_screen_is_empty_and_active() {
@@ -630,7 +630,7 @@ pub(super) mod tests {
         assert!(s.saved().by_name("Empty").unwrap().members.is_empty());
     }
 
-    /// M5c, R3, R29. Under Unsorted the new context takes the unsorted
+    /// R3, R29. Under Unsorted the new context takes the unsorted
     /// windows. The pinned window shows there too, gets no record, and
     /// still shows under the new context. The parked member of C stays
     /// out.
@@ -736,7 +736,7 @@ pub(super) mod tests {
         )
     }
 
-    /// M5c. While no screen shows a managed Space, as at the login window,
+    /// While no screen shows a managed Space, as at the login window,
     /// `create` makes no context and says why. So the next Space change
     /// parks nothing.
     #[test]
@@ -806,7 +806,7 @@ pub(super) mod tests {
         assert_eq!(vec![wid(2)], s.parked());
     }
 
-    /// M5c, I3. The switch after a create names the new context in another
+    /// I3. The switch after a create names the new context in another
     /// case and with an accent. The reactor resolves it when it runs it.
     #[test]
     fn a_switch_right_after_a_create_finds_the_new_context_in_another_spelling() {
@@ -883,7 +883,7 @@ pub(super) mod tests {
         assert_eq!(ContextKey::Named(comms), s.reactor.contexts.active());
     }
 
-    /// M5c, I3. `sugarglider context create Work` followed at once by
+    /// I3. `sugarglider context create Work` followed at once by
     /// `sugarglider context switch Work`, while "Client work" exists. The
     /// stale snapshot doesn't have Work, and "Work" starts a word of "Client
     /// work".

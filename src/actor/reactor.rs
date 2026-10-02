@@ -87,7 +87,7 @@ pub enum Event {
     /// `frames` holds the visible frame of each screen, and `bounds` the full
     /// bounds of its display. The main screen is always first in both lists.
     /// `ids` names each display, main screen first; a recording made before
-    /// M9 has none, and the screens then count from 1.
+    /// recorded before Sugarglider recorded display ids has none, and the screens then count from 1.
     ///
     /// See the `SpaceChanged` event for an explanation of the other parameters.
     ScreenParametersChanged {

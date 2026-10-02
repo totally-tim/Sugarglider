@@ -1,7 +1,7 @@
 // Copyright The Glide Authors
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! Reactor tests for the focus rules of M5b, taken from the spec: focus from
+//! Reactor tests for the focus rules of the spec: focus from
 //! outside on windows in no context, pinned windows, members, new windows and
 //! panels (R24), the end of a switch's wait (R25), raising a member instead
 //! of switching (R40), a new tab that takes focus (R36), and activating

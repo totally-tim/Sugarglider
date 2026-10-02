@@ -4643,7 +4643,7 @@ mod tests {
         s.switch(c);
         let path = s.dir.path().join("contexts.json");
         fs::remove_file(&path).unwrap();
-        // The window closes first, as the reactor records it from M5b on.
+        // The window closes first, as the reactor records it.
         s.reactor.contexts.window_closed(closing);
         s.close(closing);
         assert!(!path.exists());
