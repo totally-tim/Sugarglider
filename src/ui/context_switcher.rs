@@ -1,8 +1,8 @@
 // Copyright The Sugarglider Authors
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! The context switcher's JSON contract: the payload the panel shows,
-//! the rank result, and the commands the panel sends. The contract is
+//! The context switcher's JSON contract: the payload the panel shows, the rank
+//! result, and the commands the panel sends. The contract is
 //! `docs/specs/contexts-switcher-contract.md`.
 //!
 //! The reactor builds the show payload from its own state and calls the

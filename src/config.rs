@@ -1137,8 +1137,8 @@ mod tests {
         );
     }
 
-    /// R28. Contexts are off by default and choose global scope; the
-    /// scope key is read and rejects values that aren't a scope.
+    /// R28. Contexts are off by default and choose global scope; the scope key
+    /// is read and rejects values that aren't a scope.
     #[test]
     fn contexts_are_off_by_default_and_turn_on_with_their_flag() {
         assert!(!Config::default().settings.experimental.contexts.enable);

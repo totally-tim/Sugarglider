@@ -1,11 +1,11 @@
 // Copyright The Glide Authors
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! Reactor tests for `per_screen` scope: each screen has its own active
-//! context (R8), a switch takes the target's members along from the other
-//! screens and keeps their place in the layouts they leave (R9), focus from
-//! outside switches the screen a window was last shown on (R26), and a scope
-//! change follows R11.
+//! Reactor tests for `per_screen` scope: each screen has its own active context
+//! (R8), a switch takes the target's members along from the other screens and
+//! keeps their place in the layouts they leave (R9), focus from outside
+//! switches the screen a window was last shown on (R26), and a scope change
+//! follows R11.
 
 use test_log::test;
 
@@ -65,9 +65,9 @@ fn r8_r9_a_per_screen_switch_changes_only_the_screen_it_runs_on() {
     assert_eq!(ContextKey::Named(id), s.saved_active_on(2));
 }
 
-/// R9: a member that moves to another display keeps its
-/// place in the layout it left, which closes the gap while it is away. When
-/// its screen switches back, it returns to that place.
+/// R9: a member that moves to another display keeps its place in the layout it
+/// left, which closes the gap while it is away. When its screen switches back,
+/// it returns to that place.
 #[test]
 fn r9_a_moved_member_returns_to_its_place_in_the_layout_it_left() {
     let mut s = Setup::on(vec![screen(), right()], vec![Some(space()), Some(right_space())]);

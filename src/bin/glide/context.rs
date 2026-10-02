@@ -957,9 +957,9 @@ mod tests {
         }
     }
 
-    /// Every subcommand that changes a context sends its command, waits
-    /// for its result, and prints nothing on success. A number outside 1 to
-    /// 9 fails before anything is sent.
+    /// Every subcommand that changes a context sends its command, waits for its
+    /// result, and prints nothing on success. A number outside 1 to 9 fails
+    /// before anything is sent.
     #[test]
     fn the_new_subcommands_send_their_command_and_print_nothing() {
         for (args, command) in [
@@ -1007,10 +1007,9 @@ mod tests {
         }
     }
 
-    /// `list --json` prints the index of each member record, and
-    /// `context forget` sends that index with the record's app and title,
-    /// read from the snapshot, so the reactor can check that it still names
-    /// the same record.
+    /// `list --json` prints the index of each member record, and `context
+    /// forget` sends that index with the record's app and title, read from the
+    /// snapshot, so the reactor can check that it still names the same record.
     #[test]
     fn a_forget_index_is_the_record_index_of_list_json() {
         let printed = printed_json(&["list", "--json"], snapshot());
@@ -1034,9 +1033,9 @@ mod tests {
         );
     }
 
-    /// `forget` checks the index against the snapshot before it sends:
-    /// a record whose window is open, an index off the end, a built-in,
-    /// and a name that matches nothing fail without sending a command.
+    /// `forget` checks the index against the snapshot before it sends: a record
+    /// whose window is open, an index off the end, a built-in, and a name that
+    /// matches nothing fail without sending a command.
     #[test]
     fn forget_checks_the_record_against_the_snapshot_first() {
         for (args, reason) in [
@@ -1061,9 +1060,9 @@ mod tests {
         }
     }
 
-    /// The reactor checks the record again, so a list that changed
-    /// between the snapshot and the command fails instead of removing
-    /// another record. Its reason goes to stderr with status 1.
+    /// The reactor checks the record again, so a list that changed between the
+    /// snapshot and the command fails instead of removing another record. Its
+    /// reason goes to stderr with status 1.
     #[test]
     fn forget_prints_the_reactors_reason_when_the_record_changed() {
         let reason = "The member record changed since it was listed; list the contexts again";
@@ -1076,8 +1075,8 @@ mod tests {
         assert_eq!((1, "", format!("{reason}\n")), (ran.status, &*ran.out, ran.err));
     }
 
-    /// The reactor's reason for a command that did nothing goes to
-    /// stderr, and the exit status is 1, for every new subcommand.
+    /// The reactor's reason for a command that did nothing goes to stderr, and
+    /// the exit status is 1, for every new subcommand.
     #[test]
     fn a_new_subcommand_that_did_nothing_prints_the_reason() {
         let reason = "Only a named context can be deleted";
@@ -1660,8 +1659,8 @@ set -euo pipefail
 /usr/local/bin/sugarglider context switch \"$1\" 2>&1
 ";
 
-    /// The Raycast script command is the one the spec ships, is
-    /// executable, and is a valid bash script.
+    /// The Raycast script command is the one the spec ships, is executable, and
+    /// is a valid bash script.
     #[test]
     fn the_switch_context_script_is_the_shipped_one_and_valid_bash() {
         use std::fs;
@@ -1731,8 +1730,7 @@ set -euo pipefail
         assert_eq!((1, "", format!("{reason}\n")), (ran.status, &*ran.out, ran.err));
     }
 
-    /// `sugarglider context add <query>` adds the focused window to a
-    /// context.
+    /// `sugarglider context add <query>` adds the focused window to a context.
     #[test]
     fn add_sends_one_command_for_the_focused_window() {
         let parsed = parse(&["add", "Comms"]);

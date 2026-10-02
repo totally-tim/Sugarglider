@@ -236,9 +236,8 @@ pub(super) mod tests {
     }
 
     /// The members are the windows that show on the visible Spaces.
-    /// Sugarglider's own window, a panel the layout leaves alone, a
-    /// minimized window, and a window on a screen whose Space is off stay
-    /// out.
+    /// Sugarglider's own window, a panel the layout leaves alone, a minimized
+    /// window, and a window on a screen whose Space is off stay out.
     #[test]
     fn a_new_context_holds_the_tracked_windows_on_the_visible_spaces() {
         let right = rect(1200., 0., 1200., 1000.);
@@ -291,9 +290,9 @@ pub(super) mod tests {
         assert!(s.parked().is_empty());
     }
 
-    /// L3. Under a context, the new context takes the windows that
-    /// show. A parked window stays parked and out, and a pinned window gets
-    /// no record (R3). The windows keep their frames.
+    /// L3. Under a context, the new context takes the windows that show. A
+    /// parked window stays parked and out, and a pinned window gets no record
+    /// (R3). The windows keep their frames.
     #[test]
     fn a_new_context_keeps_what_the_screen_shows() {
         let mut s = Setup::new(4);
@@ -394,11 +393,11 @@ pub(super) mod tests {
         answer_context_request(ContextRequest::Result(RequestId(request)), snapshot).0
     }
 
-    /// I3. `sugarglider context create Work` followed at once by
-    /// `sugarglider context switch Work`, while "Workshop" exists. The server
-    /// answers both from a snapshot that doesn't have Work yet, where "Work"
-    /// starts Workshop's name. It sends both commands as they were written,
-    /// and the reactor resolves the name after it has created Work.
+    /// I3. `sugarglider context create Work` followed at once by `sugarglider
+    /// context switch Work`, while "Workshop" exists. The server answers both
+    /// from a snapshot that doesn't have Work yet, where "Work" starts
+    /// Workshop's name. It sends both commands as they were written, and the
+    /// reactor resolves the name after it has created Work.
     #[test]
     fn a_switch_right_after_a_create_goes_to_the_new_context() {
         let mut s = Setup::new(2);
@@ -483,9 +482,9 @@ pub(super) mod tests {
         s.apps.simulate_until_quiet(&mut s.reactor);
     }
 
-    /// L7. A window the user floats and a window that floats by default
-    /// are tracked windows on screen, so the new context holds them. They
-    /// stay where they float, and the tiles don't change.
+    /// L7. A window the user floats and a window that floats by default are
+    /// tracked windows on screen, so the new context holds them. They stay
+    /// where they float, and the tiles don't change.
     #[test]
     fn a_new_context_holds_the_floating_windows_where_they_float() {
         let mut s = Setup::new(3);
@@ -523,10 +522,9 @@ pub(super) mod tests {
         assert!(s.parked().is_empty());
     }
 
-    /// R1. Under Everything, the new context takes every window on
-    /// screen, also the windows that are in other contexts, and those
-    /// contexts keep them. The window of an app the user hid is not on
-    /// screen and stays out.
+    /// R1. Under Everything, the new context takes every window on screen, also
+    /// the windows that are in other contexts, and those contexts keep them.
+    /// The window of an app the user hid is not on screen and stays out.
     #[test]
     fn a_new_context_takes_windows_that_other_contexts_hold_too() {
         let mut s = Setup::new(4);
@@ -584,8 +582,8 @@ pub(super) mod tests {
         assert_eq!(frames, s.frames(&shown));
     }
 
-    /// R7, L3. In global scope the new context takes the windows on
-    /// every visible Space, and each Space keeps its arrangement.
+    /// R7, L3. In global scope the new context takes the windows on every
+    /// visible Space, and each Space keeps its arrangement.
     #[test]
     fn a_new_context_takes_the_windows_on_both_displays() {
         let right = rect(1200., 0., 1200., 1000.);
@@ -613,8 +611,8 @@ pub(super) mod tests {
         assert_eq!(vec![frames[1]], tiles(&s, space2, right));
     }
 
-    /// With no window on screen, the new context has no members, and
-    /// it still becomes active and is saved.
+    /// With no window on screen, the new context has no members, and it still
+    /// becomes active and is saved.
     #[test]
     fn a_new_context_with_no_window_on_screen_is_empty_and_active() {
         let mut s = Setup::on(vec![screen()], vec![Some(space())]);
@@ -630,10 +628,9 @@ pub(super) mod tests {
         assert!(s.saved().by_name("Empty").unwrap().members.is_empty());
     }
 
-    /// R3, R29. Under Unsorted the new context takes the unsorted
-    /// windows. The pinned window shows there too, gets no record, and
-    /// still shows under the new context. The parked member of C stays
-    /// out.
+    /// R3, R29. Under Unsorted the new context takes the unsorted windows. The
+    /// pinned window shows there too, gets no record, and still shows under the
+    /// new context. The parked member of C stays out.
     #[test]
     fn a_new_context_under_unsorted_takes_the_unsorted_windows() {
         let mut s = Setup::new(4);
@@ -736,9 +733,8 @@ pub(super) mod tests {
         )
     }
 
-    /// While no screen shows a managed Space, as at the login window,
-    /// `create` makes no context and says why. So the next Space change
-    /// parks nothing.
+    /// While no screen shows a managed Space, as at the login window, `create`
+    /// makes no context and says why. So the next Space change parks nothing.
     #[test]
     fn a_new_context_is_refused_while_no_space_is_managed() {
         let mut s = Setup::new(2);
@@ -806,8 +802,8 @@ pub(super) mod tests {
         assert_eq!(vec![wid(2)], s.parked());
     }
 
-    /// I3. The switch after a create names the new context in another
-    /// case and with an accent. The reactor resolves it when it runs it.
+    /// I3. The switch after a create names the new context in another case and
+    /// with an accent. The reactor resolves it when it runs it.
     #[test]
     fn a_switch_right_after_a_create_finds_the_new_context_in_another_spelling() {
         let mut s = Setup::new(2);
@@ -883,10 +879,9 @@ pub(super) mod tests {
         assert_eq!(ContextKey::Named(comms), s.reactor.contexts.active());
     }
 
-    /// I3. `sugarglider context create Work` followed at once by
-    /// `sugarglider context switch Work`, while "Client work" exists. The
-    /// stale snapshot doesn't have Work, and "Work" starts a word of "Client
-    /// work".
+    /// I3. `sugarglider context create Work` followed at once by `sugarglider
+    /// context switch Work`, while "Client work" exists. The stale snapshot
+    /// doesn't have Work, and "Work" starts a word of "Client work".
     #[test]
     fn a_switch_right_after_a_create_goes_to_the_new_context_when_its_name_matches_another() {
         let mut s = Setup::new(2);

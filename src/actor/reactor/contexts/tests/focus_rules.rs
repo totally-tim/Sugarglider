@@ -1,13 +1,13 @@
 // Copyright The Glide Authors
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! Reactor tests for the focus rules of the spec: focus from
-//! outside on windows in no context, pinned windows, members, new windows and
-//! panels (R24), the end of a switch's wait (R25), raising a member instead
-//! of switching (R40), a new tab that takes focus (R36), and activating
-//! Finder when no window can take focus (R12 step 6). The raise manager's
-//! channel is replaced by one the test reads, and the test sends the
-//! activation and main window events that the raises would cause.
+//! Reactor tests for the focus rules of the spec: focus from outside on windows
+//! in no context, pinned windows, members, new windows and panels (R24), the
+//! end of a switch's wait (R25), raising a member instead of switching (R40), a
+//! new tab that takes focus (R36), and activating Finder when no window can
+//! take focus (R12 step 6). The raise manager's channel is replaced by one the
+//! test reads, and the test sends the activation and main window events that
+//! the raises would cause.
 
 use test_log::test;
 use tokio::sync::mpsc::UnboundedReceiver;

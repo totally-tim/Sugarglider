@@ -3059,9 +3059,9 @@ mod tests {
         assert_eq!(cx.active(), ContextKey::Everything);
     }
 
-    /// R8. `contexts.json` holds each screen's active context next to
-    /// the global one, and a restart restores them. A screen with no entry
-    /// shows Everything.
+    /// R8. `contexts.json` holds each screen's active context next to the
+    /// global one, and a restart restores them. A screen with no entry shows
+    /// Everything.
     #[test]
     fn m9_contexts_json_holds_the_active_context_of_each_screen() {
         let mut cx = Contexts::new();
@@ -3091,9 +3091,8 @@ mod tests {
         );
     }
 
-    /// R8. A screen's saved context that no longer exists, and a saved
-    /// value of another shape, load as Everything. Built-ins load as
-    /// themselves.
+    /// R8. A screen's saved context that no longer exists, and a saved value of
+    /// another shape, load as Everything. Built-ins load as themselves.
     #[test]
     fn m9_a_screens_saved_context_that_is_gone_loads_as_everything() {
         let doc = serde_json::json!({
