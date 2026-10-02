@@ -19,18 +19,16 @@ use livesplit_hotkey::{ConsumePreference, Modifiers};
 use objc2_app_kit::{
     NSRunningApplication, NSScreen, NSWindow, NSWindowNumberListOptions, NSWorkspace,
 };
-use objc2_core_foundation::{CFRetained, CGPoint, CGRect, CGSize};
+use objc2_core_foundation::CFRetained;
 use objc2_core_graphics::{
     CGDisplayBounds, CGMainDisplayID, CGWindowID, CGWindowListCopyWindowInfo, CGWindowListOption,
     kCGNullWindowID,
 };
 use objc2_foundation::{MainThreadMarker, NSString};
 use sugarglider::actor::{self, reactor};
-use sugarglider::model::{accepted_bottom_strip, bounded_bottom_corner};
 use sugarglider::sys::app::{AXUIElementExt, AppInfo, NSRunningApplicationExt, WindowInfo};
 use sugarglider::sys::event::{self, get_mouse_pos};
 use sugarglider::sys::executor::Executor;
-use sugarglider::sys::geometry::{CGRectExt, SameAs};
 use sugarglider::sys::screen::{self, ScreenCache};
 use sugarglider::sys::window_server::{
     self, SkylightConnection, WindowServerId, get_window, kCGSWindowCreated,
@@ -82,66 +80,6 @@ enum Command {
         #[arg(long, default_value_t = 500, value_parser = clap::value_parser!(u64).range(50..=10000))]
         interval_ms: u64,
     },
-    /// Probe parking with the production bottom-strip rule. Explicit corner
-    /// choices are diagnostic probes and can use unsupported geometry.
-    #[command()]
-    Park {
-        pid: pid_t,
-        window_server_id: CGWindowID,
-        /// An explicit diagnostic corner. Omit to use the production rule.
-        #[arg(long, value_enum)]
-        corner: Option<Corner>,
-        /// Park the window even if it looks parked already. The printed
-        /// set-frame command then puts it back at its parked frame.
-        #[arg(long)]
-        force: bool,
-        /// Move without writing the window's size first.
-        #[arg(long)]
-        position_only: bool,
-    },
-    /// Write a frame to a window, in the top-left coordinates that `list ax`
-    /// prints.
-    #[command()]
-    SetFrame {
-        pid: pid_t,
-        window_server_id: CGWindowID,
-        #[arg(allow_negative_numbers = true)]
-        x: f64,
-        #[arg(allow_negative_numbers = true)]
-        y: f64,
-        width: f64,
-        height: f64,
-    },
-}
-
-/// A corner for an explicit diagnostic probe.
-#[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
-enum Corner {
-    BottomRight,
-    BottomLeft,
-    TopRight,
-    TopLeft,
-}
-
-impl Corner {
-    fn name(self) -> String {
-        self.to_possible_value().expect("no corner is skipped").get_name().to_owned()
-    }
-
-    /// The origin at which a window of `size` shows 1 point of `target` in
-    /// this corner.
-    fn origin(self, size: CGSize, target: CGRect) -> CGPoint {
-        let right = target.max().x - 1.0;
-        let bottom = target.max().y - 1.0;
-        let left = target.min().x - size.width + 1.0;
-        let top = target.min().y - size.height + 1.0;
-        match self {
-            Corner::BottomRight => CGPoint::new(right, bottom),
-            Corner::BottomLeft => CGPoint::new(left, bottom),
-            Corner::TopRight => CGPoint::new(right, top),
-            Corner::TopLeft => CGPoint::new(left, top),
-        }
-    }
 }
 
 #[derive(Subcommand, Clone)]
@@ -439,32 +377,6 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
         }
-        Command::Park {
-            pid,
-            window_server_id,
-            corner,
-            force,
-            position_only,
-        } => park(
-            pid,
-            window_server_id,
-            corner,
-            force,
-            position_only,
-            MainThreadMarker::new().unwrap(),
-        )?,
-        Command::SetFrame {
-            pid,
-            window_server_id,
-            x,
-            y,
-            width,
-            height,
-        } => {
-            let window = find_window(pid, window_server_id)?;
-            let frame = CGRect::new(CGPoint::new(x, y), CGSize::new(width, height));
-            write_frame(pid, &window, frame, false)?;
-        }
     }
     Ok(())
 }
@@ -484,167 +396,6 @@ fn find_window(
         .next()
         .context("Could not find matching window")?;
     Ok(window.clone())
-}
-
-fn park(
-    pid: pid_t,
-    window_server_id: CGWindowID,
-    corner: Option<Corner>,
-    force: bool,
-    position_only: bool,
-    mtm: MainThreadMarker,
-) -> anyhow::Result<()> {
-    let window = find_window(pid, window_server_id)?;
-    let frame = window.frame()?;
-    let (screens, _) = ScreenCache::new()
-        .update_screen_config(screen::get_ns_screens(mtm))
-        .context("Could not read the screen configuration")?;
-    let frames: Vec<CGRect> = screens.iter().map(|screen| screen.visible_frame).collect();
-    let screen = best_screen_for_window(&frames, &frame).context("Window is on no screen")?;
-    let target = frames[screen];
-    let bounds = screens[screen].bounds;
-    if looks_parked(frame, target) {
-        println!("The window already shows a narrow corner strip on screen {screen} {target:?}.");
-        if !force {
-            println!("Pass --force to park it anyway.");
-            bail!("window looks parked; restore it first");
-        }
-        println!("Parking it anyway. The command below puts it back at its parked frame.");
-    }
-
-    println!("Current frame is {frame:?}. To put the window back, run:");
-    let devtool = std::env::args().next().unwrap_or_else(|| "devtool".to_string());
-    println!(
-        "  {devtool} set-frame {pid} {window_server_id} {} {} {} {}",
-        frame.origin.x, frame.origin.y, frame.size.width, frame.size.height,
-    );
-
-    let others: Vec<CGRect> = screens
-        .iter()
-        .enumerate()
-        .filter(|(idx, _)| *idx != screen)
-        .map(|(_, screen)| screen.bounds)
-        .collect();
-    let automatic = bounded_bottom_corner(frame.size, bounds, &others);
-    println!("Production target uses full display bounds {bounds:?}.");
-    println!("Explicit diagnostic corners use visible frame {target:?}:");
-    for (candidate, origin, overlap) in corner_candidates(frame.size, target, &others) {
-        println!(
-            "  {:<12} origin ({}, {}), overlap {overlap}",
-            candidate.name(),
-            origin.x,
-            origin.y,
-        );
-    }
-    let origin = match corner {
-        Some(corner) => corner.origin(frame.size, target),
-        None => automatic.context("No clear bottom corner under the production rule")?.0,
-    };
-    let parked = CGRect { origin, size: frame.size };
-    println!("Parking at {parked:?}");
-    match corner {
-        Some(_) => write_frame(pid, &window, parked, position_only),
-        None => {
-            let side = automatic.expect("the automatic target was checked").1;
-            write_frame_with_acceptance(pid, &window, parked, position_only, |observed| {
-                accepted_bottom_strip(observed, parked.size, bounds, &others, side)
-            })
-        }
-    }
-}
-
-/// Each corner with the origin of a window of `size` parked there and the area
-/// that window overlaps `others`, in the order the parking rule tries them.
-fn corner_candidates(
-    size: CGSize,
-    target: CGRect,
-    others: &[CGRect],
-) -> Vec<(Corner, CGPoint, f64)> {
-    Corner::value_variants()
-        .iter()
-        .map(|&corner| {
-            let origin = corner.origin(size, target);
-            let frame = CGRect { origin, size };
-            let overlap = others.iter().map(|other| other.intersection(&frame).area()).sum();
-            (corner, origin, overlap)
-        })
-        .collect()
-}
-
-/// Whether a window at `frame` has a narrow corner strip on the visible
-/// frame. This also recognizes explicit diagnostic top-corner probes.
-fn looks_parked(frame: CGRect, screen: CGRect) -> bool {
-    let shown = screen.intersection(&frame);
-    let thin = shown.size.width <= 1.0 || shown.size.height <= 1.0;
-    let covers_corner = (frame.min().x <= screen.min().x || frame.max().x >= screen.max().x)
-        && (frame.min().y <= screen.min().y || frame.max().y >= screen.max().y);
-    thin && covers_corner
-}
-
-/// The screen the window overlaps the most, the way the reactor picks it.
-fn best_screen_for_window(screens: &[CGRect], frame: &CGRect) -> Option<usize> {
-    screens
-        .iter()
-        .enumerate()
-        .map(|(idx, screen)| (idx, screen.intersection(frame).area()))
-        .filter(|&(_, area)| area > 0.0)
-        .max_by_key(|&(_, area)| area as i64)
-        .map(|(idx, _)| idx)
-        .or_else(|| screens.iter().position(|screen| screen.contains(frame.mid())))
-}
-
-/// Writes a frame with enhanced UI off, reading it back after each attempt.
-/// The position-only probe skips the size write; the normal path matches the
-/// app actor's size-then-position request.
-/// Returns an error if the window does not take the frame.
-fn write_frame(
-    pid: pid_t,
-    window: &AXUIElement,
-    frame: CGRect,
-    position_only: bool,
-) -> anyhow::Result<()> {
-    write_frame_with_acceptance(pid, window, frame, position_only, |observed| {
-        observed.same_as(frame)
-    })
-}
-
-fn write_frame_with_acceptance(
-    pid: pid_t,
-    window: &AXUIElement,
-    frame: CGRect,
-    position_only: bool,
-    accepts: impl Fn(CGRect) -> bool,
-) -> anyhow::Result<()> {
-    const ATTEMPTS: usize = 3;
-    let app = AXUIElement::application(pid);
-    let enhanced = app.enhanced_user_interface().unwrap_or(false);
-    if enhanced {
-        _ = app.set_enhanced_user_interface(false);
-    }
-    let result = (|| -> anyhow::Result<()> {
-        for attempt in 1..=ATTEMPTS {
-            if !position_only {
-                window.set_size(frame.size)?;
-            }
-            window.set_position(frame.origin)?;
-            let observed = window.frame()?;
-            println!("Attempt {attempt}: requested {frame:?}, observed {observed:?}");
-            if accepts(observed) {
-                if !observed.same_as(frame) {
-                    println!("Accepted observed frame under the bounded bottom-strip rule");
-                }
-                return Ok(());
-            }
-            if attempt < ATTEMPTS {
-                std::thread::sleep(Duration::from_millis(5));
-            }
-        }
-        bail!("The window did not take the requested frame");
-    })();
-    if enhanced {
-        _ = app.set_enhanced_user_interface(true);
-    }
-    result
 }
 
 /// Subscribes to every window server notification event in a range and prints
@@ -1143,18 +894,9 @@ async fn time<O, F: Future<Output = O>>(desc: &str, f: impl FnOnce() -> F) -> O 
 #[cfg(test)]
 mod tests {
     use clap::Parser;
-    use objc2_core_foundation::{CGPoint, CGRect, CGSize};
-    use sugarglider::model::{BottomCorner, bounded_bottom_corner};
     use sugarglider::sys::app::AppInfo;
 
-    use super::{
-        Command, Corner, Opt, ax_list_diagnostic, ax_list_no_match, corner_candidates,
-        looks_parked, targeted_ax_list,
-    };
-
-    fn rect(x: f64, y: f64, w: f64, h: f64) -> CGRect {
-        CGRect::new(CGPoint::new(x, y), CGSize::new(w, h))
-    }
+    use super::{Opt, ax_list_diagnostic, ax_list_no_match, targeted_ax_list};
 
     #[test]
     fn targeted_ax_list_distinguishes_no_app_error_and_empty_windows() {
@@ -1189,132 +931,5 @@ mod tests {
             Some("AX list: pid=33920 bundle=com.apple.TextEdit: 0 windows".to_owned())
         );
         assert_eq!(ax_list_diagnostic(33920, &info, Ok(1)), None);
-    }
-
-    #[test]
-    fn set_frame_accepts_negative_coordinates() {
-        let opt = Opt::try_parse_from([
-            "devtool",
-            "set-frame",
-            "123",
-            "456",
-            "-2999",
-            "-1.5",
-            "400",
-            "300",
-        ])
-        .unwrap();
-        let Command::SetFrame {
-            pid,
-            window_server_id,
-            x,
-            y,
-            width,
-            height,
-        } = opt.command
-        else {
-            panic!("parsed the wrong command");
-        };
-        assert_eq!(
-            (123, 456, -2999., -1.5, 400., 300.),
-            (pid, window_server_id, x, y, width, height)
-        );
-    }
-
-    #[test]
-    fn park_takes_a_corner_force_and_position_only() {
-        let opt = Opt::try_parse_from([
-            "devtool",
-            "park",
-            "123",
-            "456",
-            "--corner",
-            "top-left",
-            "--force",
-            "--position-only",
-        ])
-        .unwrap();
-        let Command::Park {
-            pid,
-            window_server_id,
-            corner,
-            force,
-            position_only,
-        } = opt.command
-        else {
-            panic!("parsed the wrong command");
-        };
-        assert_eq!(
-            (123, 456, Some(Corner::TopLeft), true, true),
-            (pid, window_server_id, corner, force, position_only)
-        );
-
-        let opt = Opt::try_parse_from(["devtool", "park", "123", "456"]).unwrap();
-        let Command::Park {
-            corner, force, position_only, ..
-        } = opt.command
-        else {
-            panic!("parsed the wrong command");
-        };
-        assert_eq!((None, false, false), (corner, force, position_only));
-    }
-
-    #[test]
-    fn park_lists_every_corner() {
-        // One display with a 25-point menu bar and a hidden Dock.
-        let screen = rect(0., 25., 1512., 957.);
-        let candidates = corner_candidates(CGSize::new(800., 600.), screen, &[]);
-        assert_eq!(
-            vec![
-                (Corner::BottomRight, CGPoint::new(1511., 981.), 0.),
-                (Corner::BottomLeft, CGPoint::new(-799., 981.), 0.),
-                (Corner::TopRight, CGPoint::new(1511., -574.), 0.),
-                (Corner::TopLeft, CGPoint::new(-799., -574.), 0.),
-            ],
-            candidates
-        );
-    }
-
-    #[test]
-    fn automatic_park_uses_only_a_clear_bottom_corner() {
-        let size = CGSize::new(400., 300.);
-        let screen = rect(0., 0., 1000., 1000.);
-        assert_eq!(
-            bounded_bottom_corner(size, screen, &[]),
-            Some((CGPoint::new(999., 999.), BottomCorner::Right))
-        );
-        assert_eq!(
-            bounded_bottom_corner(size, screen, &[rect(1000., 0., 1000., 1000.)]),
-            Some((CGPoint::new(-399., 999.), BottomCorner::Left))
-        );
-        assert_eq!(
-            bounded_bottom_corner(
-                size,
-                screen,
-                &[
-                    rect(-1000., 0., 1000., 1000.),
-                    rect(1000., 0., 1000., 1000.)
-                ]
-            ),
-            None
-        );
-    }
-
-    #[test]
-    fn park_recognizes_a_parked_window() {
-        let screen = rect(0., 25., 1512., 957.);
-        let size = CGSize::new(800., 600.);
-        for (corner, origin, _) in corner_candidates(size, screen, &[]) {
-            assert!(looks_parked(CGRect { origin, size }, screen), "{corner:?}");
-        }
-        // macOS keeps the title bar below the menu bar, so a window parked at
-        // a top corner can end up as a strip along the side.
-        assert!(looks_parked(rect(-799., 25., 800., 600.), screen));
-
-        assert!(!looks_parked(rect(100., 100., 800., 600.), screen));
-        assert!(!looks_parked(rect(0., 25., 1512., 957.), screen));
-        // A 1-point strip along an edge, away from the corners.
-        assert!(!looks_parked(rect(1511., 300., 800., 300.), screen));
-        assert!(!looks_parked(rect(300., 981., 800., 600.), screen));
     }
 }
