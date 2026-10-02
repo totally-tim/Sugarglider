@@ -42,9 +42,7 @@ pub struct PreferencesJson {
 
     // Experimental features
     pub contexts_enable: bool,
-    /// Missing in older Preferences payloads that had no scope picker.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub contexts_scope: Option<Scope>,
+    pub contexts_scope: Scope,
 
     // Window rules
     pub window_rules: Vec<WindowRuleJson>,
@@ -108,7 +106,7 @@ impl PreferencesJson {
                 LayoutKind::Scroll => "scroll".to_string(),
             },
             contexts_enable: settings.experimental.contexts.enable,
-            contexts_scope: Some(settings.experimental.contexts.scope),
+            contexts_scope: settings.experimental.contexts.scope,
             window_rules: config.window_rules.iter().map(WindowRuleJson::from_rule).collect(),
             hotkeys: {
                 // The default hotkey of each command in the default config
@@ -160,9 +158,7 @@ impl PreferencesJson {
             _ => LayoutKind::Tree,
         };
         settings.experimental.contexts.enable = self.contexts_enable;
-        if let Some(scope) = self.contexts_scope {
-            settings.experimental.contexts.scope = scope;
-        }
+        settings.experimental.contexts.scope = self.contexts_scope;
 
         let window_rules: Vec<WindowRule> =
             self.window_rules.iter().filter_map(WindowRuleJson::to_rule).collect();
@@ -705,7 +701,7 @@ mod tests {
             drag_drop_live_preview: true,
             default_layout_kind: "tree".to_string(),
             contexts_enable: true,
-            contexts_scope: Some(Scope::PerScreen),
+            contexts_scope: Scope::PerScreen,
             window_rules: vec![WindowRuleJson {
                 app_name: Some("Finder".to_string()),
                 bundle_id: Some("com.apple.finder".to_string()),
@@ -1314,18 +1310,10 @@ mod tests {
         assert_eq!(serde_json::json!("per_screen"), json["contextsScope"]);
 
         let mut prefs: PreferencesJson = serde_json::from_value(json.clone()).unwrap();
-        prefs.contexts_scope = Some(Scope::Global);
+        prefs.contexts_scope = Scope::Global;
         assert_eq!(
             Scope::Global,
             prefs.apply_to_config(&config).settings.experimental.contexts.scope
-        );
-
-        let mut old = json.as_object().unwrap().clone();
-        old.remove("contextsScope");
-        let old: PreferencesJson = serde_json::from_value(old.into()).unwrap();
-        assert_eq!(
-            Scope::PerScreen,
-            old.apply_to_config(&config).settings.experimental.contexts.scope
         );
 
         let mut invalid = json;

@@ -1,6 +1,7 @@
 {
   "animate": false,
   "contextsEnable": true,
+  "contextsScope": "global",
   "defaultLayoutKind": "tree",
   "dragDropEnable": true,
   "dragDropLivePreview": false,

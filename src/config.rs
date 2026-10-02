@@ -652,13 +652,11 @@ fn write_preferences_to_path(
         }
     }
     doc["settings"]["experimental"]["contexts"]["enable"] = value(prefs.contexts_enable);
-    if let Some(scope) = prefs.contexts_scope {
-        let scope = match scope {
-            Scope::Global => "global",
-            Scope::PerScreen => "per_screen",
-        };
-        doc["settings"]["experimental"]["contexts"]["scope"] = value(scope);
-    }
+    let scope = match prefs.contexts_scope {
+        Scope::Global => "global",
+        Scope::PerScreen => "per_screen",
+    };
+    doc["settings"]["experimental"]["contexts"]["scope"] = value(scope);
 
     // Update window_rules only when the window changed them. The window
     // carries every condition through, but the comments and the rest of a
@@ -2121,6 +2119,7 @@ mod tests {
                 "settings.drag_drop.enable",
                 "settings.drag_drop.live_preview",
                 "settings.experimental.contexts.enable",
+                "settings.experimental.contexts.scope",
                 "settings.focus_follows_mouse",
                 "settings.inner_gap",
                 "settings.mouse_follows_focus",
@@ -2137,7 +2136,7 @@ mod tests {
     }
 
     #[test]
-    fn the_scope_picker_saves_and_an_older_payload_preserves_scope() {
+    fn the_scope_picker_saves_the_scope() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("glide.toml");
         std::fs::write(
@@ -2146,7 +2145,7 @@ mod tests {
         )
         .unwrap();
         let mut prefs: PreferencesJson = serde_json::from_str(PREFERENCES_FROM_SWIFT).unwrap();
-        prefs.contexts_scope = Some(Scope::PerScreen);
+        prefs.contexts_scope = Scope::PerScreen;
 
         write_preferences_to_path(&prefs, &path).unwrap();
         let written = std::fs::read_to_string(&path).unwrap();
@@ -2156,14 +2155,7 @@ mod tests {
             Config::load(Some(&path)).unwrap().settings.experimental.contexts.scope
         );
 
-        prefs.contexts_scope = None;
-        write_preferences_to_path(&prefs, &path).unwrap();
-        assert_eq!(
-            Scope::PerScreen,
-            Config::load(Some(&path)).unwrap().settings.experimental.contexts.scope
-        );
-
-        prefs.contexts_scope = Some(Scope::Global);
+        prefs.contexts_scope = Scope::Global;
         write_preferences_to_path(&prefs, &path).unwrap();
         assert_eq!(
             Scope::Global,

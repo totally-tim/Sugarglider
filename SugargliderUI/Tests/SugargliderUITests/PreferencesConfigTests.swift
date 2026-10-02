@@ -65,7 +65,7 @@ final class PreferencesConfigTests: XCTestCase {
         "statusIconEnable": true, "animate": true, "focusFollowsMouse": false,
         "mouseFollowsFocus": false, "outerGap": 0.0, "innerGap": 0.0,
         "dragDropEnable": true, "dragDropLivePreview": true, "defaultLayoutKind": "tree",
-        "contextsEnable": true, "windowRules": [],
+        "contextsEnable": true, "contextsScope": "global", "windowRules": [],
         "hotkeys": [
           { "key": "⌥Z", "command": "\\"toggle_global_enabled\\"",
             "description": "Toggle tiling globally", "category": "System",
@@ -105,8 +105,7 @@ final class PreferencesConfigTests: XCTestCase {
     XCTAssertEqual(encoded["axSubrole"] as? String, "AXDialog")
   }
 
-  /// The scope picker's value travels as `contextsScope`. A config from an
-  /// older version without the key still decodes with no scope.
+  /// The scope picker's value travels as `contextsScope`.
   func testDecodesAndEncodesTheContextsScope() throws {
     let json = """
       {
@@ -122,12 +121,6 @@ final class PreferencesConfigTests: XCTestCase {
 
     let encoded = try Self.jsonObject(JSONEncoder().encode(config))
     XCTAssertEqual(encoded["contextsScope"] as? String, "per_screen")
-
-    let withoutScope = try JSONDecoder().decode(
-      PreferencesConfig.self,
-      from: Data(
-        json.replacingOccurrences(of: #", "contextsScope": "per_screen""#, with: "").utf8))
-    XCTAssertNil(withoutScope.contextsScope)
   }
 
   /// Each decoded binding is its own row, even when two are alike.

@@ -202,7 +202,7 @@ public class PreferencesViewModel: ObservableObject {
         defaultLayout = config.defaultLayoutKind == "scroll" ? .column : .tree
 
         contextsEnable = config.contextsEnable
-        contextsScope = config.contextsScope ?? "global"
+        contextsScope = config.contextsScope
 
         // Load hotkeys
         hotkeys = config.hotkeys
